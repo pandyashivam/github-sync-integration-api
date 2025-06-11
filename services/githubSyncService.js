@@ -14,7 +14,7 @@ class GithubSyncService {
     this.userId = userId;
     this.user = null;
     this.accessToken = null;
-    this.PER_PAGE = 250;
+    this.PER_PAGE = 100;
   }
 
   async initialize() {
@@ -52,7 +52,7 @@ class GithubSyncService {
       await this.syncOrganizationPullRequests();
       await this.syncOrganizationIssues();
       await this.syncOrganizationUsers();
-      
+
       await this.fetchOpenSourceRepoData(); 
       
       this.user.isSyncInProgress = false;
@@ -443,10 +443,11 @@ class GithubSyncService {
   async syncIssueChangelogs(repoFullName, issueNumber, issueId, repoId) {
     try {
       console.log(`Fetching changelogs for issue #${issueNumber} in repo ${repoFullName}`);
-      
+  
       let page = 1;
       let hasMoreComments = true;
-      
+      const issueObjectId = new mongoose.Types.ObjectId(issueId);
+  
       while (hasMoreComments) {
         try {
           const commentsResponse = await axios({
@@ -454,41 +455,55 @@ class GithubSyncService {
             url: `https://api.github.com/repos/${repoFullName}/issues/${issueNumber}/comments`,
             headers: {
               Authorization: `token ${this.accessToken}`,
-              Accept: 'application/vnd.github.v3+json' 
+              Accept: 'application/vnd.github.v3+json'
             },
             params: {
               per_page: this.PER_PAGE,
               page: page
             }
           });
-
+  
           const comments = commentsResponse.data;
-          console.log(`Retrieved ${comments.length} comments for issue #${issueNumber}, page ${page}`);
-          
+  
           if (comments.length < this.PER_PAGE) {
             hasMoreComments = false;
           }
-          
-          for (const comment of comments) {
-            await IssueComment.findOneAndUpdate(
-              { githubId: comment.id, userId: this.userId },
-              {
-                githubId: comment.id,
-                body: comment.body,
-                createdAt: comment.created_at,
-                updatedAt: comment.updated_at,
-                authorLogin: comment.user?.login,
-                issueId: new mongoose.Types.ObjectId(issueId),
-                repositoryId: repoId,
-                userId: this.userId
-              },
-              { upsert: true, new: true }
-            );
+
+          const existingCommentCount = await IssueComment.countDocuments({
+            userId: this.userId
+          });
+    
+          if (existingCommentCount >= 600) {
+            console.log(`Skipping sync: Already ${existingCommentCount} comments exist for`);
+            hasMoreComments = false;
           }
-          
+  
+          // Prepare bulk operations
+          const bulkOps = comments.map(comment => ({
+            updateOne: {
+              filter: { githubId: comment.id, userId: this.userId },
+              update: {
+                $set: {
+                  githubId: comment.id,
+                  body: comment.body,
+                  createdAt: comment.created_at,
+                  updatedAt: comment.updated_at,
+                  authorLogin: comment.user?.login,
+                  issueId: issueObjectId,
+                  repositoryId: repoId,
+                  userId: this.userId
+                }
+              },
+              upsert: true
+            }
+          }));
+  
+          if (bulkOps.length > 0) {
+            await IssueComment.bulkWrite(bulkOps);
+          }
+  
           page++;
           await new Promise(resolve => setTimeout(resolve, 500));
-          
         } catch (error) {
           console.error(`Error fetching comments for issue #${issueNumber}:`, error.message);
           if (error.response) {
@@ -584,24 +599,21 @@ class GithubSyncService {
 
       for (const { owner, repo } of openSourceRepos) {
         try {
-          console.log(`📦 Fetching ${owner}/${repo}`);
+          console.log(`Fetching ${owner}/${repo}`);
           const headers = {
             Authorization: `token ${this.accessToken || process.env.GITHUB_TOKEN}`,
             Accept: 'application/vnd.github.v3+json'
           };
 
-          // 1. Fetch Repository Info
           const repoResponse = await axios.get(`https://api.github.com/repos/${owner}/${repo}`, { headers });
           const repoData = repoResponse.data;
           
-          // Check if repository already exists in database
           let existingRepo = await Repository.findOne({ 
             githubId: repoData.id,
             userId: this.userId 
           });
           
           if (!existingRepo) {
-            // Create a placeholder organization for open source repos
             let openSourceOrg = await Organization.findOne({ 
               name: 'OpenSource', 
               userId: this.userId 
@@ -610,7 +622,7 @@ class GithubSyncService {
             if (!openSourceOrg) {
               openSourceOrg = await Organization.create({
                 name: 'OpenSource',
-                githubId: 0, // placeholder ID
+                githubId: 0,
                 url: 'https://github.com',
                 description: 'Collection of open source repositories',
                 avatarUrl: 'https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png',
@@ -618,7 +630,6 @@ class GithubSyncService {
               });
             }
             
-            // Save repository info
             existingRepo = await Repository.create({
               name: repoData.name,
               githubId: repoData.id,
@@ -630,75 +641,12 @@ class GithubSyncService {
               isPrivate: repoData.private
             });
             
-            console.log(`🔍 Created repository: ${repoData.full_name}`);
+            console.log(`Created repository: ${repoData.full_name}`);
           } else {
-            console.log(`🔍 Repository already exists: ${repoData.full_name}`);
+            console.log(`Repository already exists: ${repoData.full_name}`);
           }
 
-          // 2. Fetch Issues (paginated)
           let page = 1;
-          let hasMoreIssues = true;
-          
-          while (hasMoreIssues) {
-            const issuesResponse = await axios.get(`https://api.github.com/repos/${owner}/${repo}/issues`, {
-              headers,
-              params: { 
-                state: 'all', 
-                per_page: 100, 
-                page: page 
-              }
-            });
-            
-            const issues = issuesResponse.data;
-            console.log(`🐛 Issues fetched (page ${page}): ${issues.length}`);
-            
-            if (issues.length < 100) {
-              hasMoreIssues = false;
-            }
-            
-            for (const issue of issues) {
-              // Skip pull requests (they show up in issues endpoint)
-              if (issue.pull_request) continue;
-              
-              // Check if issue already exists
-              const existingIssue = await Issue.findOne({ 
-                githubId: issue.id,
-                userId: this.userId 
-              });
-              
-              if (!existingIssue) {
-                await Issue.create({
-                  githubId: issue.id,
-                  number: issue.number,
-                  title: issue.title,
-                  body: issue.body,
-                  state: issue.state,
-                  url: issue.html_url,
-                  createdAt: issue.created_at,
-                  updatedAt: issue.updated_at,
-                  closedAt: issue.closed_at,
-                  authorLogin: issue.user.login,
-                  repositoryId: existingRepo._id,
-                  userId: this.userId
-                });
-                
-                // Fetch issue events (changelog)
-                await this.syncIssueChangelogs(
-                  `${owner}/${repo}`, 
-                  issue.number, 
-                  issue.id, 
-                  existingRepo._id
-                );
-              }
-            }
-            
-            page++;
-            // Respect rate limits
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          }
-          
-          // 3. Fetch Pull Requests (paginated)
-          page = 1;
           let hasMorePRs = true;
           
           while (hasMorePRs) {
@@ -706,20 +654,29 @@ class GithubSyncService {
               headers,
               params: { 
                 state: 'all', 
-                per_page: 100, 
+                per_page: this.PER_PAGE, 
                 page: page 
               }
             });
             
             const pulls = pullsResponse.data;
-            console.log(`📥 PRs fetched (page ${page}): ${pulls.length}`);
+            console.log(`PRs fetched (page ${page}): ${pulls.length}`);
             
-            if (pulls.length < 100) {
+            if (pulls.length < this.PER_PAGE) {
               hasMorePRs = false;
             }
             
             for (const pull of pulls) {
-              // Check if PR already exists
+              const existingPRCount = await PullRequest.countDocuments({
+                userId: this.userId
+              });
+
+              if (existingPRCount >= 1000) {
+                console.log(`Skipping sync: Already ${existingPRCount} PRs exist for`);
+                hasMorePRs = false;
+                break;
+              }
+
               const existingPR = await PullRequest.findOne({ 
                 githubId: pull.id,
                 userId: this.userId 
@@ -745,63 +702,84 @@ class GithubSyncService {
             }
             
             page++;
-            // Respect rate limits
             await new Promise(resolve => setTimeout(resolve, 1000));
           }
-          
-          // 4. Fetch Commits (paginated)
+
           page = 1;
-          let hasMoreCommits = true;
+          let hasMoreIssues = true;
           
-          while (hasMoreCommits) {
-            const commitsResponse = await axios.get(`https://api.github.com/repos/${owner}/${repo}/commits`, {
+          while (hasMoreIssues) {
+            const issuesResponse = await axios.get(`https://api.github.com/repos/${owner}/${repo}/issues`, {
               headers,
               params: { 
-                per_page: 100, 
+                state: 'all', 
+                per_page: this.PER_PAGE, 
                 page: page 
               }
             });
             
-            const commits = commitsResponse.data;
-            console.log(`📜 Commits fetched (page ${page}): ${commits.length}`);
+            const issues = issuesResponse.data;
+            console.log(`Issues fetched (page ${page}): ${issues.length}`);
             
-            if (commits.length < 100) {
-              hasMoreCommits = false;
+            if (issues.length < this.PER_PAGE) {
+              hasMoreIssues = false;
             }
             
-            for (const commit of commits) {
-              // Check if commit already exists
-              const existingCommit = await Commit.findOne({ 
-                sha: commit.sha,
+            for (const issue of issues) {
+              if (issue.pull_request) continue;
+
+              const existingIssueCount = await Issue.countDocuments({
+                userId: this.userId
+              });
+
+              if (existingIssueCount >= 600) {
+                console.log(`Skipping sync: Already ${existingIssueCount} issues exist for`);
+                hasMoreIssues = false;
+                break;
+              }
+              
+              const existingIssue = await Issue.findOne({ 
+                githubId: issue.id,
                 userId: this.userId 
               });
               
-              if (!existingCommit) {
-                await Commit.create({
-                  sha: commit.sha,
-                  message: commit.commit.message,
-                  url: commit.html_url,
-                  authorName: commit.commit.author?.name,
-                  authorEmail: commit.commit.author?.email,
-                  authorDate: commit.commit.author?.date,
-                  committerName: commit.commit.committer?.name,
-                  committerEmail: commit.commit.committer?.email,
-                  committedDate: commit.commit.committer?.date,
+              if (!existingIssue) {
+                await Issue.create({
+                  githubId: issue.id,
+                  number: issue.number,
+                  title: issue.title,
+                  body: issue.body,
+                  state: issue.state,
+                  url: issue.html_url,
+                  createdAt: issue.created_at,
+                  updatedAt: issue.updated_at,
+                  closedAt: issue.closed_at,
+                  authorLogin: issue.user.login,
                   repositoryId: existingRepo._id,
                   userId: this.userId
                 });
+                
+                await this.syncIssueChangelogs(
+                  `${owner}/${repo}`, 
+                  issue.number, 
+                  issue.id, 
+                  existingRepo._id
+                );
               }
+
+              
             }
             
             page++;
-            // Respect rate limits
             await new Promise(resolve => setTimeout(resolve, 1000));
           }
           
-          console.log(`✅ Successfully processed ${owner}/${repo}`);
+
+          
+          console.log(`Successfully processed ${owner}/${repo}`);
 
         } catch (err) {
-          console.error(`❌ Failed to fetch ${owner}/${repo}:`, err.response?.data || err.message);
+          console.error(`Failed to fetch ${owner}/${repo}:`, err.response?.data || err.message);
         }
       }
       
