@@ -6,30 +6,95 @@ const commitSchema = new mongoose.Schema({
     required: true,
     unique: true
   },
-  message: {
-    type: String,
-    required: true
+  commit: {
+    author: {
+      name: {
+        type: String
+      },
+      email: {
+        type: String
+      },
+      date: {
+        type: Date
+      }
+    },
+    committer: {
+      name: {
+        type: String
+      },
+      email: {
+        type: String
+      },
+      date: {
+        type: Date
+      }
+    },
+    message: {
+      type: String,
+      required: true
+    },
+    tree: {
+      sha: {
+        type: String
+      },
+      url: {
+        type: String
+      }
+    },
+    url: {
+      type: String
+    },
+    comment_count: {
+      type: Number
+    },
+    verification: {
+      verified: {
+        type: Boolean
+      },
+      reason: {
+        type: String
+      },
+      verified_at: {
+        type: Date
+      }
+    }
+  },
+  author: {
+    login: {
+      type: String
+    },
+    id: {
+      type: Number
+    },
+    node_id: {
+      type: String
+    },
+    avatar_url: {
+      type: String
+    },
+    url: {
+      type: String
+    }
+  },
+  committer: {
+    login: {
+      type: String
+    },
+    id: {
+      type: Number
+    },
+    node_id: {
+      type: String
+    },
+    avatar_url: {
+      type: String
+    },
+    url: {
+      type: String
+    }
   },
   url: {
     type: String
-  },
-  authorName: {
-    type: String
-  },
-  authorEmail: {
-    type: String
-  },
-  authorDate: {
-    type: Date
-  },
-  committerName: {
-    type: String
-  },
-  committerEmail: {
-    type: String
-  },
-  committedDate: {
-    type: Date
   },
   repositoryId: {
     type: mongoose.Schema.Types.ObjectId,

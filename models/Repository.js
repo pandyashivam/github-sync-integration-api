@@ -5,10 +5,13 @@ const repositorySchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  githubId: {
+  repoId: {
     type: Number,
     required: true,
     unique: true
+  },
+  node_id: {
+    type: String
   },
   fullName: {
     type: String,
@@ -19,6 +22,32 @@ const repositorySchema = new mongoose.Schema({
   },
   url: {
     type: String
+  },
+  owner: {
+    login: {
+      type: String
+    },
+    id: {
+      type: Number
+    },
+    avatar_url: {
+      type: String
+    },
+    url: {
+      type: String
+    },
+    type: {
+      type: String
+    }
+  },
+  created_at: {
+    type: Date
+  },
+  updated_at: {
+    type: Date
+  },
+  pushed_at: {
+    type: Date
   },
   organizationId: {
     type: mongoose.Schema.Types.ObjectId,

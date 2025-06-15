@@ -10,7 +10,32 @@ const organizationSchema = new mongoose.Schema({
     required: true,
     unique: true
   },
+  login: {
+    type: String,
+    required: true
+  },
+  node_id: {
+    type: String
+  },
   url: {
+    type: String
+  },
+  repos_url: {
+    type: String
+  },
+  events_url: {
+    type: String
+  },
+  hooks_url: {
+    type: String
+  },
+  issues_url: {
+    type: String
+  },
+  members_url: {
+    type: String
+  },
+  public_members_url: {
     type: String
   },
   description: {

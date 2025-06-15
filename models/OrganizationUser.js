@@ -9,7 +9,10 @@ const organizationUserSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  avatarUrl: {
+  node_id: {
+    type: String
+  },
+  avatar_url: {
     type: String
   },
   url: {

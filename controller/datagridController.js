@@ -168,7 +168,18 @@ exports.getModelData = async (req, res) => {
     const data = await Model.find(query)
       .sort(sort)
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean();
+
+    //  const fields = data.length > 0 ? Object.keys(data[0])
+    //   .filter(field => !field.startsWith('_'))
+    //   .map(field => {
+    //     const fieldType = data[0][field];
+    //     return {
+    //       field,
+    //       type: typeof fieldType
+    //     };
+    //   }) : typeof fieldType;
     
     const fields = Object.keys(Model.schema.paths)
       .filter(field => !field.startsWith('_'))

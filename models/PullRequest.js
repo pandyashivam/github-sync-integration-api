@@ -25,21 +25,112 @@ const pullRequestSchema = new mongoose.Schema({
   url: {
     type: String
   },
-  createdAt: {
+  user: {
+    login: {
+      type: String
+    },
+    id: {
+      type: Number
+    },
+    node_id: {
+      type: String
+    },
+    avatar_url: {
+      type: String
+    }
+  },
+  created_at: {
     type: Date
   },
-  updatedAt: {
+  updated_at: {
     type: Date
   },
-  closedAt: {
+  closed_at: {
     type: Date
   },
-  mergedAt: {
+  merged_at: {
     type: Date
   },
-  authorLogin: {
+  merge_commit_sha: {
     type: String
   },
+  assignee: {
+    type: mongoose.Schema.Types.Mixed
+  },
+  assignees: [{
+    id: {
+      type: Number
+    },
+    node_id: {
+      type: String
+    },
+    url: {
+      type: String
+    },
+    name: {
+      type: String
+    },
+    login: {
+      type: String
+    },
+    avatar_url: {
+      type: String
+    }
+  }],
+  requested_reviewers: [{
+    id: {
+      type: Number
+    },
+    node_id: {
+      type: String
+    },
+    url: {
+      type: String
+    },
+    login: {
+      type: String
+    },
+    avatar_url: {
+      type: String
+    }
+  }],
+  requested_teams: [{
+    id: {
+      type: Number
+    },
+    node_id: {
+      type: String
+    },
+    url: {
+      type: String
+    },
+    name: {
+      type: String
+    }
+  }],
+  labels: [{
+    id: {
+      type: Number
+    },
+    node_id: {
+      type: String
+    },
+    url: {
+      type: String
+    },
+    name: {
+      type: String
+    },
+    color: {
+      type: String
+    },
+    default: {
+      type: Boolean
+    },
+    description: {
+      type: String
+    }
+  }],
   repositoryId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Repository',
