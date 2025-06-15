@@ -23,8 +23,16 @@ class GithubSyncService {
       if (!this.user) {
         throw new Error('User not found');
       }
-      
+
       this.accessToken = this.user.githubAccessToken;
+      this.lastSyncTime = this.user.LastSynced ? new Date(this.user.LastSynced) : null;
+      
+      if (this.lastSyncTime) {
+        console.log(`Last sync time: ${this.lastSyncTime.toISOString()}`);
+      } else {
+        console.log('No previous sync found, will perform full sync');
+      }
+      
       return true;
     } catch (error) {
       console.error('Error initializing GitHub sync:', error);
@@ -41,25 +49,39 @@ class GithubSyncService {
         }
       }
 
-      console.log(`Starting GitHub sync for user ${this.userId}`);
+      const syncType = this.lastSyncTime ? 'partial' : 'full';
+      console.log(`Starting GitHub ${syncType} sync for user ${this.userId}`);
       
-      this.user.isSyncInProgress = true;
-      await this.user.save();
-
-      await this.syncOrganizations();
-      await this.syncOrganizationRepositories();
-      await this.syncOrganizationCommits();
-      await this.syncOrganizationPullRequests();
-      await this.syncOrganizationIssues();
-      await this.syncOrganizationUsers();
-
-      await this.fetchOpenSourceRepoData(); 
-      
-      this.user.isSyncInProgress = false;
       this.user.LastSynced = new Date();
+      this.user.isSyncInProgress = true;
+      this.user.LastSyncedType = syncType;
       await this.user.save();
+
+      try {
+        await this.syncOrganizations();
+        await this.syncOrganizationRepositories();
+        await this.syncOrganizationCommits();
+        await this.syncOrganizationPullRequests();
+        await this.syncOrganizationIssues();
+        await this.syncOrganizationUsers();
+  
+        await this.fetchOpenSourceRepoData();
+
+        this.user.isSyncInProgress = false;
+        this.user.LastSynced = new Date();
+        await this.user.save();
+        
+        console.log(`GitHub sync completed for user ${this.userId}`);
+      } catch (error) {
+        this.user.isSyncInProgress = false;
+        this.user.LastSynced = new Date();
+        await this.user.save();
+        console.error('Error during GitHub sync:', error);
+        return false;
+      }
+     
       
-      console.log(`GitHub sync completed for user ${this.userId}`);
+     
       
       return true;
     } catch (error) {
@@ -154,6 +176,12 @@ class GithubSyncService {
       const organizations = await Organization.find({ userId: this.userId });
       
       for (const org of organizations) {
+       
+        if (org.name === 'OpenSource') {
+          console.log('Skipping OpenSource organization - this is a custom organization for open source repos');
+          continue;
+        }
+        
         let page = 1;
         let hasMoreRepos = true;
         
@@ -242,6 +270,15 @@ class GithubSyncService {
         
         while (hasMoreCommits) {
           try {
+            const params = {
+              per_page: this.PER_PAGE,
+              page: page
+            };
+         
+            if (this.lastSyncTime) {
+              params.since = this.lastSyncTime.toISOString();
+            }
+            
             const commitsResponse = await axios({
               method: 'GET',
               url: `https://api.github.com/repos/${repo.fullName}/commits`,
@@ -249,15 +286,15 @@ class GithubSyncService {
                 Authorization: `token ${this.accessToken}`,
                 Accept: 'application/vnd.github.v3+json' 
               },
-              params: {
-                per_page: this.PER_PAGE,
-                page: page
-              }
+              params: params
             });
 
             const commits = commitsResponse.data;
             console.log(`Retrieved ${commits.length} commits from repo ${repo.name}, page ${page}`);
-            
+            if(commits.length === 0) {
+              hasMoreCommits = false;
+            }
+
             if (commits.length < this.PER_PAGE) {
               hasMoreCommits = false;
             }
@@ -347,6 +384,14 @@ class GithubSyncService {
         
         while (hasMorePulls) {
           try {
+            const params = {
+              state: 'all',
+              per_page: this.PER_PAGE,
+              page: page,
+              sort: 'updated',
+              direction: 'desc'
+            };
+            
             const pullsResponse = await axios({
               method: 'GET',
               url: `https://api.github.com/repos/${repo.fullName}/pulls`,
@@ -354,14 +399,24 @@ class GithubSyncService {
                 Authorization: `token ${this.accessToken}`,
                 Accept: 'application/vnd.github.v3+json' 
               },
-              params: {
-                state: 'all',
-                per_page: this.PER_PAGE,
-                page: page
-              }
+              params: params
             });
 
-            const pulls = pullsResponse.data;
+            let pulls = pullsResponse.data;
+            
+            // Filter pulls by lastSyncTime if it exists
+            if (this.lastSyncTime) {
+              pulls = pulls.filter(pull => {
+                const updatedAt = new Date(pull.updated_at);
+                return updatedAt > this.lastSyncTime;
+              });
+              
+              // If we've reached pulls older than our lastSyncTime, we can stop paginating
+              if (pulls.length < pullsResponse.data.length) {
+                hasMorePulls = false;
+              }
+            }
+            
             console.log(`Retrieved ${pulls.length} PRs from repo ${repo.name}, page ${page}`);
             
             if (pulls.length < this.PER_PAGE) {
@@ -460,6 +515,14 @@ class GithubSyncService {
         
         while (hasMoreIssues) {
           try {
+            const params = {
+              state: 'all',
+              per_page: this.PER_PAGE,
+              page: page,
+              sort: 'updated',  
+              direction: 'desc'
+            };
+            
             const issuesResponse = await axios({
               method: 'GET',
               url: `https://api.github.com/repos/${repo.fullName}/issues`,
@@ -467,16 +530,22 @@ class GithubSyncService {
                 Authorization: `token ${this.accessToken}`,
                 Accept: 'application/vnd.github.v3+json' 
               },
-              params: {
-                state: 'all',
-                per_page: this.PER_PAGE,
-                page: page,
-                sort: 'created',
-                direction: 'desc'
-              }
+              params: params
             });
 
-            const allIssues = issuesResponse.data;
+            let allIssues = issuesResponse.data;
+            
+            if (this.lastSyncTime) {
+              allIssues = allIssues.filter(issue => {
+                const updatedAt = new Date(issue.updated_at);
+                return updatedAt > this.lastSyncTime;
+              });
+             
+              if (allIssues.length < issuesResponse.data.length) {
+                hasMoreIssues = false;
+              }
+            }
+            
             const issues = allIssues.filter(issue => !issue.pull_request);
             console.log(`Retrieved ${issues.length} issues from repo ${repo.name}, page ${page}`);
             
@@ -579,6 +648,11 @@ class GithubSyncService {
   
       while (hasMoreEvents) {
         try {
+          const params = {
+            per_page: this.PER_PAGE,
+            page: page
+          };
+          
           const changelogResponse = await axios({
             method: 'GET',
             url: `https://api.github.com/repos/${repoFullName}/issues/${issueNumber}/events`,
@@ -586,13 +660,21 @@ class GithubSyncService {
               Authorization: `token ${this.accessToken}`,
               Accept: 'application/vnd.github.v3+json'
             },
-            params: {
-              per_page: this.PER_PAGE,
-              page: page
-            }
+            params: params
           });
   
-          const events = changelogResponse.data;
+          let events = changelogResponse.data;
+
+          if (this.lastSyncTime) {
+            events = events.filter(event => {
+              const createdAt = new Date(event.created_at);
+              return createdAt > this.lastSyncTime;
+            });
+            
+            if (events.length < changelogResponse.data.length) {
+              hasMoreEvents = false;
+            }
+          }
   
           if (events.length < this.PER_PAGE) {
             hasMoreEvents = false;
@@ -656,6 +738,14 @@ class GithubSyncService {
   async syncOrganizationUsers() {
     try {
       console.log(`Starting organization users sync`);
+      
+      const shouldDoFullSync = !this.lastSyncTime || 
+        ((new Date() - this.lastSyncTime) > 7 * 24 * 60 * 60 * 1000);
+      
+      if (!shouldDoFullSync) {
+        console.log('Skipping organization users sync - less than 7 days since last sync');
+        return;
+      }
       
       const organizations = await Organization.find({ userId: this.userId });
       
@@ -728,6 +818,15 @@ class GithubSyncService {
     try {
       console.log(`Starting open source repositories sync`);
       
+      const shouldDoFullSync = !this.lastSyncTime || 
+        ((new Date() - this.lastSyncTime) > 24 * 60 * 60 * 1000);
+      
+      if (!shouldDoFullSync) {
+        console.log('Fetching only updated open source data since last sync');
+      } else {
+        console.log('Performing full open source data sync');
+      }
+      
       const openSourceRepos = [
         { owner: 'nodejs', repo: 'node' },      
         { owner: 'nestjs', repo: 'nest' }, 
@@ -749,6 +848,21 @@ class GithubSyncService {
           avatarUrl: 'https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png',
           userId: this.userId
         });
+      }
+
+      // Check if all repositories already exist
+      const existingRepos = await Repository.find({
+        userId: this.userId,
+        organizationId: openSourceOrg._id
+      });
+
+      const existingRepoNames = existingRepos.map(repo => repo.name);
+      const isAnyExistingRepo = existingRepoNames.some(repo => openSourceRepos.some(({ owner, repo }) => repo === repo));
+      
+
+      if (isAnyExistingRepo ) {
+        console.log('open source repositories already exist and no full sync required, skipping fetch');
+        return true;
       }
 
       for (const { owner, repo } of openSourceRepos) {
@@ -809,11 +923,24 @@ class GithubSyncService {
               params: { 
                 state: 'all', 
                 per_page: this.PER_PAGE, 
-                page: page 
+                page: page,
+                sort: 'updated',
+                direction: 'desc'
               }
             });
             
-            const pulls = pullsResponse.data;
+            let pulls = pullsResponse.data;
+            
+            if (this.lastSyncTime) {
+              pulls = pulls.filter(pull => {
+                const updatedAt = new Date(pull.updated_at);
+                return updatedAt > this.lastSyncTime;
+              });
+              
+              if (pulls.length < pullsResponse.data.length) {
+                hasMorePRs = false;
+              }
+            }
             console.log(`PRs fetched (page ${page}): ${pulls.length}`);
             
             if (pulls.length < this.PER_PAGE) {
@@ -905,11 +1032,24 @@ class GithubSyncService {
               params: { 
                 state: 'all', 
                 per_page: this.PER_PAGE, 
-                page: page 
+                page: page,
+                sort: 'updated',
+                direction: 'desc'
               }
             });
             
-            const issues = issuesResponse.data;
+            let issues = issuesResponse.data;
+            
+            if (this.lastSyncTime) {
+              issues = issues.filter(issue => {
+                const updatedAt = new Date(issue.updated_at);
+                return updatedAt > this.lastSyncTime;
+              });
+              
+              if (issues.length < issuesResponse.data.length) {
+                hasMoreIssues = false;
+              }
+            }
             console.log(`Issues fetched (page ${page}): ${issues.length}`);
             
             if (issues.length < this.PER_PAGE) {
@@ -1024,6 +1164,14 @@ class GithubSyncService {
   async fetchOpenSourceRepoMembers(owner, repo, organizationId) {
     try {
       console.log(`Fetching contributors for ${owner}/${repo}`);
+      
+      const shouldDoFullSync = !this.lastSyncTime || 
+        ((new Date() - this.lastSyncTime) > 7 * 24 * 60 * 60 * 1000);
+      
+      if (!shouldDoFullSync) {
+        console.log(`Skipping contributors sync for ${owner}/${repo} - less than 7 days since last sync`);
+        return;
+      }
       
       let page = 1;
       let hasMoreContributors = true;

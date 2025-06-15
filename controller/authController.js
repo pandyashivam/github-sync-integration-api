@@ -64,12 +64,12 @@ exports.githubCallback = async (req, res) => {
     } else {
       user.githubAccessToken = accessToken;
       user.isSyncInProgress = true;
-      user.LastSynced = null;
+      user.LastSynced = new Date();
     }
 
     await user.save();
     
-    const syncService = new GithubSyncService(user._id);
+    const syncService = new GithubSyncService(new ObjectId(user._id));
     syncService.startSync().catch(error => {
       console.error('Error during background sync:', error);
     });
@@ -140,6 +140,51 @@ exports.removeGithubUser = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to remove user',
+      error: error.message
+    });
+  }
+};
+
+exports.syncGithubUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID is required' 
+      });
+    }
+    
+    const user = await User.findById(userId);
+    
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    user.LastSynced = new Date();
+    user.isSyncInProgress = true;
+    await user.save();
+    
+    const syncService = new GithubSyncService(new ObjectId(user._id));
+    syncService.startSync().catch(error => {
+      console.error('Error during background sync:', error);
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'GitHub sync initiated',
+      userId
+    });
+    
+  } catch (error) {
+    console.error('Error syncing GitHub user:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to sync user',
       error: error.message
     });
   }

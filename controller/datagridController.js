@@ -181,15 +181,17 @@ exports.getModelData = async (req, res) => {
     //     };
     //   }) : typeof fieldType;
     
-    const fields = Object.keys(Model.schema.paths)
-      .filter(field => !field.startsWith('_'))
-      .map(field => {
-        const fieldType = Model.schema.paths[field].instance;
-        return {
-          field,
-          type: fieldType.toLowerCase()
-        };
-      });
+    // const fields = Object.keys(Model.schema.paths)
+    //   .filter(field => !field.startsWith('_'))
+    //   .map(field => {
+    //     const fieldType = Model.schema.paths[field].instance;
+    //     return {
+    //       field,
+    //       type: fieldType.toLowerCase()
+    //     };
+    //   });
+
+    const fields = extractDistinctFields(data).filter(x => !x.field.startsWith('_'));
     
     return res.status(200).json({
       success: true,
@@ -209,6 +211,49 @@ exports.getModelData = async (req, res) => {
     });
   }
 }; 
+
+function extractDistinctFields(documents) {
+  const fieldMap = new Map();
+
+  const excludePatterns = [
+    'buffer', 'readUInt', 'readInt', 'readDouble', 'write', 'inspect', 'toJSON'
+  ];
+
+  function shouldExclude(fieldPath) {
+    return excludePatterns.some(pattern => fieldPath.includes(pattern));
+  }
+
+  function extract(obj, parentKey = '') {
+    for (const key in obj) {
+      if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
+
+      const fullKey = parentKey ? `${parentKey}.${key}` : key;
+      const value = obj[key];
+
+      if (shouldExclude(fullKey)) continue;
+
+      if (!fieldMap.has(fullKey)) {
+        let type = Array.isArray(value) ? 'array' : typeof value;
+        if (Buffer.isBuffer(value)) type = 'buffer';
+        if (value instanceof Date) type = 'date';
+        fieldMap.set(fullKey, type);
+      }
+
+      if (value && typeof value === 'object' && !Array.isArray(value) && !Buffer.isBuffer(value)) {
+        extract(value, fullKey);
+      }
+    }
+  }
+
+  for (const doc of documents) {
+    extract(doc);
+  }
+
+  return Array.from(fieldMap.entries()).map(([field, type]) => ({
+    field,
+    type
+  }));
+}
 
 function processAdvancedFilters(queryParams, Model) {
   const advancedFilters = {};
