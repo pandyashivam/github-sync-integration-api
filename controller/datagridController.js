@@ -333,4 +333,216 @@ function processAdvancedFilters(queryParams, Model) {
   });
   
   return advancedFilters;
-} 
+}
+
+exports.getUserDetails = async (req, res) => {
+  try {
+    const { assigneeId, modelName } = req.params;
+    const { page = 1, limit = 25, search = '', sort = 'created_at', sortOrder = 'desc' } = req.query;
+    
+    if (!assigneeId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Assignee ID is required'
+      });
+    }
+    
+    if (!modelName || !['Issue', 'PullRequest'].includes(modelName)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Valid model name (Issue or PullRequest) is required'
+      });
+    }
+    
+    const Model = mongoose.models[modelName];
+    if (!Model) {
+      return res.status(404).json({
+        success: false,
+        error: `Model ${modelName} not found`
+      });
+    }
+    
+    let query = {};
+    let userDetails = null;
+    
+    if (modelName === 'Issue') {
+      query = { 'closed_by.id': parseInt(assigneeId) };
+      const issue = await Model.findOne(query).lean();
+      if (issue && issue.closed_by) {
+        userDetails = issue.closed_by;
+      }
+    } else if (modelName === 'PullRequest') {
+      query = { 'assignee.id': parseInt(assigneeId) };
+      const pr = await Model.findOne(query).lean();
+      if (pr && pr.assignee) {
+        userDetails = pr.assignee;
+      }
+    }
+    
+    if (!userDetails) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+    
+    // Process advanced filters from query params
+    const advancedFilters = {};
+    const excludedParams = ['page', 'limit', 'search', 'sort', 'sortOrder'];
+    
+    Object.keys(req.query).forEach(key => {
+      if (excludedParams.includes(key)) {
+        return;
+      }
+      
+      if (key.includes('_')) {
+        const [fieldName, operation] = key.split('_');
+        const value = req.query[key];
+        
+        switch (operation) {
+          case 'contains':
+            advancedFilters[fieldName] = { $regex: value, $options: 'i' };
+            break;
+          case 'notContains':
+            advancedFilters[fieldName] = { $not: { $regex: value, $options: 'i' } };
+            break;
+          case 'startsWith':
+            advancedFilters[fieldName] = { $regex: `^${value}`, $options: 'i' };
+            break;
+          case 'endsWith':
+            advancedFilters[fieldName] = { $regex: `${value}$`, $options: 'i' };
+            break;
+          case 'empty':
+            advancedFilters[fieldName] = { $in: ['', null] };
+            break;
+          case 'ne':
+            if (!isNaN(Number(value))) {
+              advancedFilters[fieldName] = { $ne: Number(value) };
+            } else {
+              advancedFilters[fieldName] = { $ne: value };
+            }
+            break;
+          case 'gt':
+            advancedFilters[fieldName] = { $gt: Number(value) };
+            break;
+          case 'gte':
+            advancedFilters[fieldName] = { $gte: Number(value) };
+            break;
+          case 'lt':
+            advancedFilters[fieldName] = { $lt: Number(value) };
+            break;
+          case 'lte':
+            advancedFilters[fieldName] = { $lte: Number(value) };
+            break;
+        }
+      } else {
+        const value = req.query[key];
+        if (!isNaN(Number(value))) {
+          advancedFilters[key] = Number(value);
+        } else if (value === 'true' || value === 'false') {
+          advancedFilters[key] = value === 'true';
+        } else {
+          advancedFilters[key] = value;
+        }
+      }
+    });
+    
+    if (Object.keys(advancedFilters).length > 0) {
+      query = { 
+        $and: [
+          query,
+          advancedFilters
+        ]
+      };
+    }
+    
+    if (search) {
+      const searchConditions = [
+        { title: { $regex: search, $options: 'i' } },
+        { body: { $regex: search, $options: 'i' } },
+        { state: { $regex: search, $options: 'i' } }
+      ];
+      
+      if (!isNaN(Number(search))) {
+        searchConditions.push({ number: Number(search) });
+        searchConditions.push({ githubId: Number(search) });
+      }
+      
+      if (query.$and) {
+        query.$and.push({ $or: searchConditions });
+      } else {
+        query = { 
+          $and: [
+            query, // Keep the original assigneeId filter
+            { $or: searchConditions }
+          ]
+        };
+      }
+    }
+    
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = parseInt(limit, 10) || 25;
+    const skip = (pageNum - 1) * limitNum;
+    
+    const sortField = sort || 'created_at';
+    const sortDirection = sortOrder === 'asc' ? 1 : -1;
+    const sortOptions = { [sortField]: sortDirection };
+    
+    console.log('Final query for user details:', JSON.stringify(query, null, 2));
+    
+    const total = await Model.countDocuments(query);
+    
+    const items = await Model.find(query)
+      .sort(sortOptions)
+      .skip(skip)
+      .limit(limitNum)
+      .lean();
+    
+    const tableData = items.map(item => {
+      const data = {
+        id: item.number || item.githubId,
+        title: item.title,
+        state: item.state,
+        created_at: item.created_at,
+        updated_at: item.updated_at
+      };
+      
+      if (modelName === 'Issue') {
+        data.summary = item.title;
+        data.description = item.body;
+      } else if (modelName === 'PullRequest') {
+        data.summary = item.title;
+        data.description = item.body;
+      }
+      
+      return data;
+    });
+    
+    const fields = [
+      { field: 'id', type: 'number' },
+      { field: 'summary', type: 'string' },
+      { field: 'description', type: 'string' },
+      { field: 'state', type: 'string' },
+      { field: 'created_at', type: 'date' }
+    ];
+    
+    return res.status(200).json({
+      success: true,
+      count: items.length,
+      totalPages: Math.ceil(total / limitNum),
+      currentPage: pageNum,
+      totalRecords: total,
+      userDetails,
+      modelName,
+      fields,
+      data: tableData
+    });
+    
+  } catch (error) {
+    console.error('Error fetching user details:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Server Error'
+    });
+  }
+}; 
