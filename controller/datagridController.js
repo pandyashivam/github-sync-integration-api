@@ -1,6 +1,67 @@
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const { ObjectId } = require('mongoose').Types;
+const excludedFields = {
+  merge_commit_sha: 0,
+  merged_at: 0,
+  updatedAt: 0,
+  'assignee.events_url': 0,
+  'assignee.followers_url': 0,
+  'assignee.following_url': 0,
+  'assignee.gists_url': 0,
+  'assignee.gravatar_id': 0,
+  'assignee.html_url': 0,
+  'assignee.node_id': 0,
+  'assignee.organizations_url': 0,
+  'assignee.received_events_url': 0,
+  'assignee.site_admin': 0,
+  'assignee.starred_url': 0,
+  'assignee.subscriptions_url': 0,
+  'assignee.type': 0,
+  'assignee.url': 0,
+  'assignee.user_view_type': 0,
+  'assignee.repos_url': 0,
+  requested_reviewers: 0,
+  requested_teams: 0,
+  createdAt: 0,
+  assignees : 0,
+  updated_at: 0,
+  'user.node_id': 0,
+  events_url: 0,
+  hooks_url:0,
+  issues_url:0,
+  members_url:0,
+  public_members_url:0,
+  repos_url:0,
+  node_id:0,
+  'author.url':0,
+  'author.node_id':0,
+  'committer.node_id':0,
+  'labels.node_id':0,
+  'labels.url':0,
+  labels_url:0,
+  performed_via_github_app:0,
+  reactions:0,
+  state_reason:0,
+  timeline_url:0,
+  'closed_by.node_id':0,
+  'closed_by.events_url':0,
+  'closed_by.followers_url':0,
+  'closed_by.following_url':0,
+  'closed_by.gists_url':0,
+  'closed_by.gravatar_id':0,
+  'closed_by.html_url':0,
+  'closed_by.organizations_url':0,
+  'closed_by.received_events_url':0,
+  'closed_by.repos_url':0,
+  'closed_by.site_admin':0,
+  'closed_by.starred_url':0,
+  'closed_by.subscriptions_url':0,
+  'closed_by.type':0,
+  'closed_by.url':0,
+  'closed_by.user_view_type':0,
+  type:0,
+}
 
 exports.getAllUsers = async (req, res) => {
   try {
@@ -166,10 +227,12 @@ exports.getModelData = async (req, res) => {
     delete query.sortOrder;
     const total = await Model.countDocuments(query);
     const data = await Model.find(query)
-      .sort(sort)
-      .skip(skip)
-      .limit(limit)
-      .lean();
+    .select(excludedFields)
+    .sort(sort)
+    .skip(skip)
+    .limit(limit)
+    .lean();
+  
 
     //  const fields = data.length > 0 ? Object.keys(data[0])
     //   .filter(field => !field.startsWith('_'))
@@ -540,6 +603,128 @@ exports.getUserDetails = async (req, res) => {
     
   } catch (error) {
     console.error('Error fetching user details:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Server Error'
+    });
+  }
+}; 
+
+exports.searchAcrossAllCollections = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { search, collectionName } = req.query;
+    
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'User ID is required'
+      });
+    }
+    
+    if (!search || search.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        error: 'Search term is required'
+      });
+    }
+    
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 25;
+    const skip = (page - 1) * limit;
+    
+    // Get all models except system models
+    let modelNames = Object.keys(mongoose.models).filter(model => 
+      !model.startsWith('_') && 
+      !['User', 'Session'].includes(model)
+    );
+    
+    // If a specific collection name is provided, only search in that collection
+    if (collectionName && modelNames.includes(collectionName)) {
+      modelNames = [collectionName];
+    }
+    
+    let allResults = [];
+    let totalMatchCount = 0;
+    
+    // Search across all models
+    for (const modelName of modelNames) {
+      const Model = mongoose.models[modelName];
+      
+      // Skip models without a userId field (not related to users)
+      const hasUserIdField = Model.schema.path('userId');
+      if (!hasUserIdField) continue;
+      
+      // Get all searchable string fields
+      const stringFields = Object.keys(Model.schema.paths).filter(
+        field => {
+          const fieldType = Model.schema.paths[field].instance;
+          return fieldType === 'String' && !field.startsWith('_');
+        }
+      );
+      
+      if (stringFields.length === 0) continue;
+      
+      // Build search query
+      const searchConditions = stringFields.map(field => ({
+        [field]: { $regex: search, $options: 'i' }
+      }));
+      
+      // Add user filter
+      const query = {
+        userId: new ObjectId(userId),
+        $or: searchConditions
+      };
+      
+      // Count matching documents
+      const total = await Model.countDocuments(query);
+      totalMatchCount += total;
+      
+      if (total > 0) {
+        // Get matching documents (paginated per collection)
+        const results = await Model.find(query)
+          .select(excludedFields)
+          .skip(skip)
+          .limit(limit)
+          .lean();
+        
+        // Fields extraction
+        const fields = extractDistinctFields(results).filter(x => !x.field.startsWith('_'));
+        
+        // Prepare response object for this collection
+        allResults.push({
+          collectionName: modelName,
+          count: results.length,
+          totalPages: Math.ceil(total / limit),
+          currentPage: page,
+          totalRecords: total,
+          fields,
+          data: results
+        });
+      }
+    }
+    
+    // Sort collections by totalRecords (highest first)
+    allResults.sort((a, b) => b.totalRecords - a.totalRecords);
+    
+    // If filtering by collection name, we don't need to paginate collections
+    // Otherwise, paginate collections (not records)
+    if (!collectionName) {
+      allResults = allResults.slice(skip, skip + limit);
+    }
+    
+    return res.status(200).json({
+      success: true,
+      count: allResults.length,
+      totalPages: Math.ceil(allResults.length / limit),
+      currentPage: page,
+      totalRecords: allResults.length,
+      totalMatches: totalMatchCount,
+      data: allResults
+    });
+    
+  } catch (error) {
+    console.error('Error searching across collections:', error);
     return res.status(500).json({
       success: false,
       error: 'Server Error'
