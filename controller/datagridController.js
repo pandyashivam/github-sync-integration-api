@@ -319,17 +319,83 @@ function extractDistinctFields(documents) {
 
 function processAdvancedFilters(queryParams, Model) {
   const advancedFilters = {};
-  const excludedParams = ['page', 'limit', 'search', 'userId', 'sort', 'sortOrder'];
+  const excludedParams = ['page', 'limit', 'search', 'userId', 'sort', 'sortOrder', 'filterType', 'repoId'];
   
   Object.keys(queryParams).forEach(key => {
     if (excludedParams.includes(key)) {
       return;
     }
     
+    // Handle special case for date range filters
+    if (key === 'closed_at_from' || key === 'closed_at_to') {
+      const baseField = 'closed_at';
+      console.log(`Processing ${key} filter:`, queryParams[key]);
+      
+      if (!advancedFilters[baseField]) {
+        advancedFilters[baseField] = {};
+      }
+      
+      if (key === 'closed_at_from' && queryParams[key] && queryParams[key] !== 'null') {
+        try {
+          // Parse YYYY-MM-DD format
+          const parts = queryParams[key].split('-');
+          if (parts.length === 3) {
+            const year = parseInt(parts[0]);
+            const month = parseInt(parts[1]) - 1; // Month is 0-indexed in JS Date
+            const day = parseInt(parts[2]);
+            
+            const fromDate = new Date(year, month, day, 0, 0, 0);
+            console.log('Parsed fromDate:', fromDate);
+            
+            if (!isNaN(fromDate.getTime())) {
+              advancedFilters[baseField].$gte = fromDate;
+              console.log('Set $gte filter:', fromDate);
+            } else {
+              console.log('Invalid fromDate, not setting filter');
+            }
+          }
+        } catch (err) {
+          console.error('Error parsing fromDate:', err);
+        }
+      } else if (key === 'closed_at_to' && queryParams[key] && queryParams[key] !== 'null') {
+        try {
+          // Parse YYYY-MM-DD format
+          const parts = queryParams[key].split('-');
+          if (parts.length === 3) {
+            const year = parseInt(parts[0]);
+            const month = parseInt(parts[1]) - 1; // Month is 0-indexed in JS Date
+            const day = parseInt(parts[2]);
+            
+            const toDate = new Date(year, month, day, 23, 59, 59);
+            console.log('Parsed toDate:', toDate);
+            
+            if (!isNaN(toDate.getTime())) {
+              advancedFilters[baseField].$lte = toDate;
+              console.log('Set $lte filter:', toDate);
+            } else {
+              console.log('Invalid toDate, not setting filter');
+            }
+          }
+        } catch (err) {
+          console.error('Error parsing toDate:', err);
+        }
+      }
+      return;
+    }
+    
+    // Handle special case for state filter
+    if (key === 'state_filter' && queryParams[key]) {
+      // Only apply filter if not "all"
+      if (queryParams[key].toLowerCase() !== 'all') {
+        advancedFilters.state = queryParams[key];
+      }
+      return;
+    }
+    
     if (key.includes('_')) {
       const [fieldName, operation] = key.split('_');
       
-      if (!Model.schema.paths[fieldName]) {
+      if (!Model.schema || !Model.schema.paths || !Model.schema.paths[fieldName]) {
         return;
       }
       
@@ -373,7 +439,7 @@ function processAdvancedFilters(queryParams, Model) {
           break;
       }
     } else {
-      if (Model.schema.paths[key]) {
+      if (Model.schema && Model.schema.paths && Model.schema.paths[key]) {
         const fieldType = Model.schema.paths[key].instance;
         const value = queryParams[key];
         
@@ -394,6 +460,7 @@ function processAdvancedFilters(queryParams, Model) {
     }
   });
   
+  console.log('Final advanced filters:', JSON.stringify(advancedFilters, null, 2));
   return advancedFilters;
 }
 
@@ -720,7 +787,18 @@ exports.searchAcrossAllCollections = async (req, res) => {
 exports.getRelationalData = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { repoId, page = 1, limit = 25, search = '', sort = 'created_at', sortOrder = 'desc', filterType = 'All' } = req.query;
+    const { 
+      repoId, 
+      page = 1, 
+      limit = 25, 
+      search = '', 
+      sort = 'created_at', 
+      sortOrder = 'desc', 
+      filterType = 'All',
+      state_filter,
+      closed_at_from,
+      closed_at_to
+    } = req.query;
     
     if (!userId) {
       return res.status(400).json({
@@ -775,18 +853,98 @@ exports.getRelationalData = async (req, res) => {
       { 'user.login': { $regex: search, $options: 'i' } }
     ] : [];
     
+    // Get available states for filter dropdown
+    let availableStates = ['open', 'closed'];
+    if (mongoose.models.PullRequest) {
+      const prStates = await mongoose.models.PullRequest.distinct('state', { 
+        userId: new ObjectId(userId),
+        repositoryId: { $in: repoIds }
+      });
+      availableStates = [...new Set([...availableStates, ...prStates])];
+    }
+    
+    if (mongoose.models.Issue) {
+      const issueStates = await mongoose.models.Issue.distinct('state', { 
+        userId: new ObjectId(userId),
+        repositoryId: { $in: repoIds }
+      });
+      availableStates = [...new Set([...availableStates, ...issueStates])];
+    }
+    
     // Initialize results
     let pullRequestsWithCommits = [];
     let issuesWithHistory = [];
     let totalPRs = 0;
     let totalIssues = 0;
     
+    // Build custom filters directly
+    const customFilters = {};
+    
+    // Add state filter
+    if (state_filter && state_filter.toLowerCase() !== 'all') {
+      customFilters.state = state_filter;
+      console.log('Applied state filter:', state_filter);
+    }
+    
+    // Add date range filters for closed_at
+    if (closed_at_from || closed_at_to) {
+      customFilters.closed_at = {};
+      
+      if (closed_at_from && closed_at_from !== 'null') {
+        try {
+          // Parse YYYY-MM-DD format
+          const parts = closed_at_from.split('-');
+          if (parts.length === 3) {
+            const year = parseInt(parts[0]);
+            const month = parseInt(parts[1]) - 1; // Month is 0-indexed in JS Date
+            const day = parseInt(parts[2]);
+            
+            const fromDate = new Date(year, month, day, 0, 0, 0);
+            if (!isNaN(fromDate.getTime())) {
+              customFilters.closed_at.$gte = fromDate;
+              console.log('Applied closed_at from filter:', fromDate);
+            }
+          }
+        } catch (err) {
+          console.error('Error parsing closed_at_from:', err);
+        }
+      }
+      
+      if (closed_at_to && closed_at_to !== 'null') {
+        try {
+          // Parse YYYY-MM-DD format
+          const parts = closed_at_to.split('-');
+          if (parts.length === 3) {
+            const year = parseInt(parts[0]);
+            const month = parseInt(parts[1]) - 1; // Month is 0-indexed in JS Date
+            const day = parseInt(parts[2]);
+            
+            const toDate = new Date(year, month, day, 23, 59, 59);
+            if (!isNaN(toDate.getTime())) {
+              customFilters.closed_at.$lte = toDate;
+              console.log('Applied closed_at to filter:', toDate);
+            }
+          }
+        } catch (err) {
+          console.error('Error parsing closed_at_to:', err);
+        }
+      }
+      
+      // If no valid date filters were added, remove the empty object
+      if (Object.keys(customFilters.closed_at).length === 0) {
+        delete customFilters.closed_at;
+      }
+    }
+    
+    console.log('Custom filters:', JSON.stringify(customFilters, null, 2));
+    
     // Fetch Pull Requests with Commits if needed
     if (mongoose.models.PullRequest && (filterType === 'All' || filterType === 'Pull Requests')) {
       // Build PR match stage
       const prMatchStage = {
         userId: new ObjectId(userId),
-        repositoryId: { $in: repoIds }
+        repositoryId: { $in: repoIds },
+        ...customFilters
       };
       
       if (search && searchConditions.length > 0) {
@@ -796,8 +954,15 @@ exports.getRelationalData = async (req, res) => {
       // Apply advanced filters
       const advancedFilters = processAdvancedFilters(req.query, mongoose.models.PullRequest);
       if (Object.keys(advancedFilters).length > 0) {
-        Object.assign(prMatchStage, advancedFilters);
+        // Don't overwrite custom filters that were already applied
+        Object.keys(advancedFilters).forEach(key => {
+          if (!customFilters[key]) {
+            prMatchStage[key] = advancedFilters[key];
+          }
+        });
       }
+      
+      console.log('Final PR match stage:', JSON.stringify(prMatchStage, null, 2));
       
       // Get PR count
       totalPRs = await mongoose.models.PullRequest.countDocuments(prMatchStage);
@@ -896,7 +1061,8 @@ exports.getRelationalData = async (req, res) => {
       // Build issue match stage
       const issueMatchStage = {
         userId: new ObjectId(userId),
-        repositoryId: { $in: repoIds }
+        repositoryId: { $in: repoIds },
+        ...customFilters
       };
       
       if (search && searchConditions.length > 0) {
@@ -906,8 +1072,15 @@ exports.getRelationalData = async (req, res) => {
       // Apply advanced filters
       const advancedFilters = processAdvancedFilters(req.query, mongoose.models.Issue);
       if (Object.keys(advancedFilters).length > 0) {
-        Object.assign(issueMatchStage, advancedFilters);
+        // Don't overwrite custom filters that were already applied
+        Object.keys(advancedFilters).forEach(key => {
+          if (!customFilters[key]) {
+            issueMatchStage[key] = advancedFilters[key];
+          }
+        });
       }
+      
+      console.log('Final Issue match stage:', JSON.stringify(issueMatchStage, null, 2));
       
       // Get issue count
       totalIssues = await mongoose.models.Issue.countDocuments(issueMatchStage);
@@ -1057,6 +1230,7 @@ exports.getRelationalData = async (req, res) => {
       currentPage: pageNum,
       totalPages: Math.ceil(totalCount / limitNum),
       repositories,
+      availableStates,
       data: relationshipData,
       fields: {
         pullRequestFields,
