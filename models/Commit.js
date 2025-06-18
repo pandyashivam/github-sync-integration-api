@@ -66,9 +66,6 @@ const commitSchema = new mongoose.Schema({
     id: {
       type: Number
     },
-    node_id: {
-      type: String
-    },
     avatar_url: {
       type: String
     },
@@ -82,9 +79,6 @@ const commitSchema = new mongoose.Schema({
     },
     id: {
       type: Number
-    },
-    node_id: {
-      type: String
     },
     avatar_url: {
       type: String

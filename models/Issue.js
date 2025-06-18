@@ -12,12 +12,6 @@ const issueSchema = new mongoose.Schema({
   repository_url: {
     type: String
   },
-  labels_url: {
-    type: String
-  },
-  node_id: {
-    type: String
-  },
   number: {
     type: Number,
     required: true
@@ -33,9 +27,6 @@ const issueSchema = new mongoose.Schema({
     id: {
       type: Number
     },
-    node_id: {
-      type: String
-    },
     avatar_url: {
       type: String
     }
@@ -43,12 +34,6 @@ const issueSchema = new mongoose.Schema({
   labels: [{
     id: {
       type: Number
-    },
-    node_id: {
-      type: String
-    },
-    url: {
-      type: String
     },
     name: {
       type: String
@@ -71,14 +56,8 @@ const issueSchema = new mongoose.Schema({
   created_at: {
     type: Date
   },
-  updated_at: {
-    type: Date
-  },
   author_association: {
     type: String
-  },
-  type: {
-    type: mongoose.Schema.Types.Mixed
   },
   draft: {
     type: Boolean
@@ -95,9 +74,6 @@ const issueSchema = new mongoose.Schema({
     },
     patch_url: {
       type: String
-    },
-    merged_at: {
-      type: Date
     }
   },
   body: {
@@ -107,48 +83,15 @@ const issueSchema = new mongoose.Schema({
     type: Date
   },
   closed_by: {
-    type: mongoose.Schema.Types.Mixed
-  },
-  reactions: {
-    url: {
+    id: {
+      type: Number
+    },
+    login: {
       type: String
     },
-    total_count: {
-      type: Number
-    },
-    "+1": {
-      type: Number
-    },
-    "-1": {
-      type: Number
-    },
-    laugh: {
-      type: Number
-    },
-    hooray: {
-      type: Number
-    },
-    confused: {
-      type: Number
-    },
-    heart: {
-      type: Number
-    },
-    rocket: {
-      type: Number
-    },
-    eyes: {
-      type: Number
+    avatar_url: {
+      type: String
     }
-  },
-  timeline_url: {
-    type: String
-  },
-  performed_via_github_app: {
-    type: mongoose.Schema.Types.Mixed
-  },
-  state_reason: {
-    type: String
   },
   repositoryId: {
     type: mongoose.Schema.Types.ObjectId,

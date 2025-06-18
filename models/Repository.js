@@ -10,9 +10,6 @@ const repositorySchema = new mongoose.Schema({
     required: true,
     unique: true
   },
-  node_id: {
-    type: String
-  },
   fullName: {
     type: String,
     required: true

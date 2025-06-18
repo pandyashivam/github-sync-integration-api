@@ -9,9 +9,6 @@ const organizationUserSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  node_id: {
-    type: String
-  },
   avatar_url: {
     type: String
   },

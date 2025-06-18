@@ -32,9 +32,6 @@ const pullRequestSchema = new mongoose.Schema({
     id: {
       type: Number
     },
-    node_id: {
-      type: String
-    },
     avatar_url: {
       type: String
     }
@@ -42,81 +39,28 @@ const pullRequestSchema = new mongoose.Schema({
   created_at: {
     type: Date
   },
-  updated_at: {
-    type: Date
-  },
   closed_at: {
     type: Date
   },
-  merged_at: {
-    type: Date
-  },
-  merge_commit_sha: {
-    type: String
-  },
   assignee: {
-    type: mongoose.Schema.Types.Mixed
+    login: {
+      type: String
+    },
+    id: {
+      type: Number
+    },
+    avatar_url: {
+      type: String
+    }
   },
-  assignees: [{
-    id: {
-      type: Number
-    },
-    node_id: {
-      type: String
-    },
-    url: {
-      type: String
-    },
-    name: {
-      type: String
-    },
-    login: {
-      type: String
-    },
-    avatar_url: {
-      type: String
-    }
-  }],
-  requested_reviewers: [{
-    id: {
-      type: Number
-    },
-    node_id: {
-      type: String
-    },
-    url: {
-      type: String
-    },
-    login: {
-      type: String
-    },
-    avatar_url: {
-      type: String
-    }
-  }],
-  requested_teams: [{
-    id: {
-      type: Number
-    },
-    node_id: {
-      type: String
-    },
-    url: {
-      type: String
-    },
-    name: {
+  commits: [{
+    sha: {
       type: String
     }
   }],
   labels: [{
     id: {
       type: Number
-    },
-    node_id: {
-      type: String
-    },
-    url: {
-      type: String
     },
     name: {
       type: String

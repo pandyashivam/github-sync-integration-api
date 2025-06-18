@@ -81,7 +81,7 @@ class GithubSyncService {
       }
      
       
-     
+      
       
       return true;
     } catch (error) {
@@ -133,14 +133,7 @@ class GithubSyncService {
                 name: orgData.login,
                 login: orgData.login,
                 githubId: orgData.id,
-                node_id: orgData.node_id,
                 url: orgData.url,
-                repos_url: orgData.repos_url,
-                events_url: orgData.events_url,
-                hooks_url: orgData.hooks_url,
-                issues_url: orgData.issues_url,
-                members_url: orgData.members_url,
-                public_members_url: orgData.public_members_url,
                 avatarUrl: orgData.avatar_url,
                 description: orgData.description,
                 userId: this.userId
@@ -214,7 +207,6 @@ class GithubSyncService {
                 {
                   name: repo.name,
                   repoId: repo.id,
-                  node_id: repo.node_id,
                   fullName: repo.full_name,
                   description: repo.description,
                   url: repo.url,
@@ -331,14 +323,12 @@ class GithubSyncService {
                   author: commit.author ? {
                     login: commit.author.login,
                     id: commit.author.id,
-                    node_id: commit.author.node_id,
                     avatar_url: commit.author.avatar_url,
                     url: commit.author.url
                   } : null,
                   committer: commit.committer ? {
                     login: commit.committer.login,
                     id: commit.committer.id,
-                    node_id: commit.committer.node_id,
                     avatar_url: commit.committer.avatar_url,
                     url: commit.committer.url
                   } : null,
@@ -424,7 +414,11 @@ class GithubSyncService {
             }
             
             for (const pull of pulls) {
-              await PullRequest.findOneAndUpdate(
+              // Fetch commits for this PR
+              const prCommits = await this.fetchPullRequestCommits(repo.fullName, pull.number, repo._id);
+              
+              // Store PR with commits
+              const savedPR = await PullRequest.findOneAndUpdate(
                 { githubId: pull.id, userId: this.userId },
                 {
                   githubId: pull.id,
@@ -436,39 +430,18 @@ class GithubSyncService {
                   user: pull.user ? {
                     login: pull.user.login,
                     id: pull.user.id,
-                    node_id: pull.user.node_id,
                     avatar_url: pull.user.avatar_url
                   } : null,
                   created_at: pull.created_at,
-                  updated_at: pull.updated_at,
                   closed_at: pull.closed_at,
-                  merged_at: pull.merged_at,
-                  merge_commit_sha: pull.merge_commit_sha,
-                  assignee: pull.assignee,
-                  assignees: pull.assignees?.map(assignee => ({
-                    id: assignee.id,
-                    node_id: assignee.node_id,
-                    url: assignee.url,
-                    login: assignee.login,
-                    avatar_url: assignee.avatar_url
-                  })),
-                  requested_reviewers: pull.requested_reviewers?.map(reviewer => ({
-                    id: reviewer.id,
-                    node_id: reviewer.node_id,
-                    url: reviewer.url,
-                    login: reviewer.login,
-                    avatar_url: reviewer.avatar_url
-                  })),
-                  requested_teams: pull.requested_teams?.map(team => ({
-                    id: team.id,
-                    node_id: team.node_id,
-                    url: team.url,
-                    name: team.name
-                  })),
+                  assignee: pull.assignee ? {
+                    login: pull.assignee.login,
+                    id: pull.assignee.id,
+                    avatar_url: pull.assignee.avatar_url
+                  } : null,
+                  commits: prCommits.map(commit => ({ sha: commit.sha })),
                   labels: pull.labels?.map(label => ({
                     id: label.id,
-                    node_id: label.node_id,
-                    url: label.url,
                     name: label.name,
                     color: label.color,
                     default: label.default,
@@ -497,6 +470,83 @@ class GithubSyncService {
       console.log(`Organization pull requests sync completed`);
     } catch (error) {
       console.error('Error in syncOrganizationPullRequests:', error);
+    }
+  }
+
+  async fetchPullRequestCommits(repoFullName, prNumber, repoId = null) {
+    try {
+      const commitsResponse = await axios({
+        method: 'GET',
+        url: `https://api.github.com/repos/${repoFullName}/pulls/${prNumber}/commits`,
+        headers: {
+          Authorization: `token ${this.accessToken || process.env.GITHUB_TOKEN}`,
+          Accept: 'application/vnd.github.v3+json'
+        },
+        params: {
+          per_page: 100 // GitHub's max per page
+        }
+      });
+
+      const commits = commitsResponse.data;
+      console.log(`Retrieved ${commits.length} commits for PR #${prNumber} in repo ${repoFullName}`);
+
+      // Process each commit
+      for (const commit of commits) {
+        await Commit.findOneAndUpdate(
+          { sha: commit.sha, userId: this.userId },
+          {
+            sha: commit.sha,
+            commit: {
+              author: {
+                name: commit.commit.author?.name,
+                email: commit.commit.author?.email,
+                date: commit.commit.author?.date
+              },
+              committer: {
+                name: commit.commit.committer?.name,
+                email: commit.commit.committer?.email,
+                date: commit.commit.committer?.date
+              },
+              message: commit.commit.message,
+              tree: {
+                sha: commit.commit.tree?.sha,
+                url: commit.commit.tree?.url
+              },
+              url: commit.commit.url,
+              comment_count: commit.commit.comment_count,
+              verification: {
+                verified: commit.commit.verification?.verified,
+                reason: commit.commit.verification?.reason,
+                verified_at: commit.commit.verification?.verified_at
+              }
+            },
+            author: commit.author ? {
+              login: commit.author.login,
+              id: commit.author.id,
+              avatar_url: commit.author.avatar_url,
+              url: commit.author.url
+            } : null,
+            committer: commit.committer ? {
+              login: commit.committer.login,
+              id: commit.committer.id,
+              avatar_url: commit.committer.avatar_url,
+              url: commit.committer.url
+            } : null,
+            url: commit.html_url,
+            repositoryId: repoId,
+            userId: this.userId
+          },
+          { upsert: true, new: true }
+        );
+      }
+
+      return commits;
+    } catch (error) {
+      console.error(`Error fetching commits for PR #${prNumber}:`, error.message);
+      if (error.response) {
+        console.error(`Status: ${error.response.status}, Data:`, error.response.data);
+      }
+      return [];
     }
   }
 
@@ -560,20 +610,15 @@ class GithubSyncService {
                   githubId: issue.id,
                   url: issue.url,
                   repository_url: issue.repository_url,
-                  labels_url: issue.labels_url,
-                  node_id: issue.node_id,
                   number: issue.number,
                   title: issue.title,
                   user: issue.user ? {
                     login: issue.user.login,
                     id: issue.user.id,
-                    node_id: issue.user.node_id,
                     avatar_url: issue.user.avatar_url
                   } : null,
                   labels: issue.labels?.map(label => ({
                     id: label.id,
-                    node_id: label.node_id,
-                    url: label.url,
                     name: label.name,
                     color: label.color,
                     default: label.default,
@@ -581,42 +626,28 @@ class GithubSyncService {
                   })),
                   state: issue.state,
                   created_at: issue.created_at,
-                  updated_at: issue.updated_at,
                   author_association: issue.author_association,
-                  type: issue.type,
                   draft: issue.draft,
                   pull_request: issue.pull_request ? {
                     url: issue.pull_request.url,
                     html_url: issue.pull_request.html_url,
                     diff_url: issue.pull_request.diff_url,
-                    patch_url: issue.pull_request.patch_url,
-                    merged_at: issue.pull_request.merged_at
+                    patch_url: issue.pull_request.patch_url
                   } : null,
                   body: issue.body,
                   closed_at: issue.closed_at,
-                  closed_by: issue.closed_by,
-                  reactions: issue.reactions ? {
-                    url: issue.reactions.url,
-                    total_count: issue.reactions.total_count,
-                    "+1": issue.reactions["+1"],
-                    "-1": issue.reactions["-1"],
-                    laugh: issue.reactions.laugh,
-                    hooray: issue.reactions.hooray,
-                    confused: issue.reactions.confused,
-                    heart: issue.reactions.heart,
-                    rocket: issue.reactions.rocket,
-                    eyes: issue.reactions.eyes
+                  closed_by: issue.closed_by ? {
+                    id: issue.closed_by.id,
+                    login: issue.closed_by.login,
+                    avatar_url: issue.closed_by.avatar_url
                   } : null,
-                  timeline_url: issue.timeline_url,
-                  performed_via_github_app: issue.performed_via_github_app,
-                  state_reason: issue.state_reason,
                   repositoryId: repo._id,
                   userId: this.userId
                 },
                 { upsert: true, new: true }
               );
               
-              await this.syncIssueChangelogs(repo.fullName, issue.number, savedIssue._id, repo._id);
+              await this.syncIssueChangelogs(repo.fullName, issue.number, savedIssue._id, repo._id, issue.id);
             }
             
             page++;
@@ -638,96 +669,297 @@ class GithubSyncService {
     }
   }
 
-  async syncIssueChangelogs(repoFullName, issueNumber, issueId, repoId) {
+  async syncIssueChangelogs(repoFullName, issueNumber, issueId, repoId, githubIssueId) {
     try {
       console.log(`Fetching changelogs for issue #${issueNumber} in repo ${repoFullName}`);
-  
-      let page = 1;
-      let hasMoreEvents = true;
       const issueObjectId = new mongoose.Types.ObjectId(issueId);
   
-      while (hasMoreEvents) {
-        try {
-          const params = {
+      // Fetch from the timeline URL
+      try {
+        const timelineResponse = await axios({
+          method: 'GET',
+          url: `https://api.github.com/repos/${repoFullName}/issues/${issueNumber}/timeline`,
+          headers: {
+            Authorization: `token ${this.accessToken || process.env.GITHUB_TOKEN}`,
+            Accept: 'application/vnd.github.v3+json'
+          },
+          params: {
             per_page: this.PER_PAGE,
-            page: page
+            page: 1
+          }
+        });
+
+        const timelineEvents = timelineResponse.data;
+        console.log(`Retrieved ${timelineEvents.length} timeline events for issue #${issueNumber}`);
+
+        // Process timeline events
+        for (const event of timelineEvents) {
+          // Ensure we have a valid ID for the event
+          let eventId = event.id;
+          if (!eventId) {
+            // Some timeline events might not have IDs, generate a unique ID
+            eventId = new mongoose.Types.ObjectId().toString();
+            console.log(`Generated new ID for event without ID: ${eventId}`);
+          } else {
+            // Ensure the ID is stored as a string to avoid type conversion issues
+            eventId = String(eventId);
+          }
+
+          // Create a base event object with common fields
+          const eventData = {
+            githubId: eventId,
+            url: event.url,
+            event: event.event,
+            created_at: event.created_at,
+            githubIssueId: githubIssueId,
+            issueId: issueObjectId,
+            repositoryId: repoId,
+            userId: this.userId
           };
-          
-          const changelogResponse = await axios({
-            method: 'GET',
-            url: `https://api.github.com/repos/${repoFullName}/issues/${issueNumber}/events`,
-            headers: {
-              Authorization: `token ${this.accessToken}`,
-              Accept: 'application/vnd.github.v3+json'
-            },
-            params: params
-          });
-  
-          let events = changelogResponse.data;
 
-          if (this.lastSyncTime) {
-            events = events.filter(event => {
-              const createdAt = new Date(event.created_at);
-              return createdAt > this.lastSyncTime;
-            });
-            
-            if (events.length < changelogResponse.data.length) {
-              hasMoreEvents = false;
-            }
-          }
-  
-          if (events.length < this.PER_PAGE) {
-            hasMoreEvents = false;
+          // Add actor if available
+          if (event.actor) {
+            eventData.actor = {
+              login: event.actor.login,
+              id: event.actor.id,
+              avatar_url: event.actor.avatar_url,
+              url: event.actor.url
+            };
           }
 
-          // Prepare bulk operations
-          const bulkOps = events.map(event => ({
-            updateOne: {
-              filter: { githubId: event.id, userId: this.userId },
-              update: {
-                $set: {
-                  githubId: event.id,
-                  node_id: event.node_id,
-                  url: event.url,
-                  actor: event.actor ? {
-                    login: event.actor.login,
-                    id: event.actor.id,
-                    node_id: event.actor.node_id,
-                    avatar_url: event.actor.avatar_url,
-                    url: event.actor.url
-                  } : null,
-                  event: event.event,
-                  commit_id: event.commit_id,
-                  commit_url: event.commit_url,
-                  created_at: event.created_at,
-                  label: event.label ? {
-                    name: event.label.name,
-                    color: event.label.color
-                  } : null,
-                  assignee: event.assignee,
-                  milestone: event.milestone,
-                  rename: event.rename,
-                  issueId: issueObjectId,
-                  repositoryId: repoId,
-                  userId: this.userId
+          // Standardize the event details into a common format
+          let eventDetails = {};
+          let eventSummary = '';
+
+          // Handle different event types
+          switch (event.event) {
+            case 'committed':
+              eventSummary = `Commit: ${event.message ? event.message.split('\n')[0] : 'No message'}`;
+              eventDetails = {
+                sha: event.sha,
+                message: event.message,
+                author: event.author ? `${event.author.name} <${event.author.email}>` : 'Unknown',
+                date: event.author ? event.author.date : event.created_at
+              };
+              break;
+              
+            case 'labeled':
+              eventSummary = `Added label: ${event.label ? event.label.name : 'Unknown'}`;
+              eventDetails = {
+                label: event.label ? event.label.name : 'Unknown',
+                color: event.label ? event.label.color : null
+              };
+              break;
+              
+            case 'unlabeled':
+              eventSummary = `Removed label: ${event.label ? event.label.name : 'Unknown'}`;
+              eventDetails = {
+                label: event.label ? event.label.name : 'Unknown',
+                color: event.label ? event.label.color : null
+              };
+              break;
+              
+            case 'assigned':
+              eventSummary = `Assigned to: ${event.assignee ? event.assignee.login : 'Unknown'}`;
+              eventDetails = {
+                assignee: event.assignee ? event.assignee.login : 'Unknown',
+                assigneeId: event.assignee ? event.assignee.id : null
+              };
+              break;
+              
+            case 'unassigned':
+              eventSummary = `Unassigned: ${event.assignee ? event.assignee.login : 'Unknown'}`;
+              eventDetails = {
+                assignee: event.assignee ? event.assignee.login : 'Unknown',
+                assigneeId: event.assignee ? event.assignee.id : null
+              };
+              break;
+              
+            case 'milestoned':
+              eventSummary = `Added to milestone: ${event.milestone ? event.milestone.title : 'Unknown'}`;
+              eventDetails = {
+                milestone: event.milestone ? event.milestone.title : 'Unknown',
+                milestoneId: event.milestone ? event.milestone.id : null
+              };
+              break;
+              
+            case 'demilestoned':
+              eventSummary = `Removed from milestone: ${event.milestone ? event.milestone.title : 'Unknown'}`;
+              eventDetails = {
+                milestone: event.milestone ? event.milestone.title : 'Unknown',
+                milestoneId: event.milestone ? event.milestone.id : null
+              };
+              break;
+              
+            case 'renamed':
+              eventSummary = `Renamed from "${event.rename ? event.rename.from : 'Unknown'}" to "${event.rename ? event.rename.to : 'Unknown'}"`;
+              eventDetails = {
+                from: event.rename ? event.rename.from : 'Unknown',
+                to: event.rename ? event.rename.to : 'Unknown'
+              };
+              break;
+              
+            case 'referenced':
+              eventSummary = `Referenced in commit: ${event.commit_id ? event.commit_id.substring(0, 7) : 'Unknown'}`;
+              eventDetails = {
+                commitId: event.commit_id,
+                commitUrl: event.commit_url,
+                repository: event.commit_repository ? event.commit_repository.full_name : repoFullName
+              };
+              break;
+              
+            case 'cross-referenced':
+              let sourceType = 'Unknown';
+              let sourceNumber = '';
+              let sourceRepo = '';
+              
+              if (event.source && event.source.issue) {
+                sourceType = 'Issue';
+                sourceNumber = event.source.issue.number;
+                sourceRepo = event.source.issue.repository ? event.source.issue.repository.full_name : '';
+              } else if (event.source && event.source.pull_request) {
+                sourceType = 'Pull Request';
+                sourceNumber = event.source.pull_request.number;
+                sourceRepo = event.source.pull_request.repository ? event.source.pull_request.repository.full_name : '';
+              }
+              
+              eventSummary = `Cross-referenced in ${sourceType} #${sourceNumber} (${sourceRepo})`;
+              eventDetails = {
+                sourceType: sourceType,
+                sourceNumber: sourceNumber,
+                sourceRepo: sourceRepo
+              };
+              break;
+              
+            case 'reviewed':
+            case 'review_requested':
+            case 'review_request_removed':
+              let reviewUser = 'Unknown';
+              let reviewState = '';
+              
+              if (event.review) {
+                reviewUser = event.review.user ? event.review.user.login : 'Unknown';
+                reviewState = event.review.state || '';
+              } else if (event.requested_reviewer) {
+                reviewUser = event.requested_reviewer.login || 'Unknown';
+              }
+              
+              eventSummary = `${event.event === 'reviewed' ? 'Reviewed by' : 
+                             event.event === 'review_requested' ? 'Review requested from' : 
+                             'Review request removed from'}: ${reviewUser}`;
+              eventDetails = {
+                user: reviewUser,
+                state: reviewState
+              };
+              break;
+              
+            case 'commented':
+              eventSummary = 'Added a comment';
+              eventDetails = {
+                body: event.body ? event.body.substring(0, 100) + (event.body.length > 100 ? '...' : '') : '',
+                url: event.html_url || event.url
+              };
+              break;
+              
+            case 'locked':
+              eventSummary = `Issue locked${event.lock_reason ? ` (${event.lock_reason})` : ''}`;
+              eventDetails = {
+                reason: event.lock_reason || 'Not specified'
+              };
+              break;
+              
+            case 'unlocked':
+              eventSummary = 'Issue unlocked';
+              eventDetails = {};
+              break;
+              
+            case 'head_ref_deleted':
+              eventSummary = `Branch deleted: ${event.head_ref_name || 'Unknown'}`;
+              eventDetails = {
+                branch: event.head_ref_name || 'Unknown'
+              };
+              break;
+              
+            case 'head_ref_restored':
+              eventSummary = `Branch restored: ${event.head_ref_name || 'Unknown'}`;
+              eventDetails = {
+                branch: event.head_ref_name || 'Unknown'
+              };
+              break;
+              
+            case 'head_ref_force_pushed':
+              eventSummary = `Branch force-pushed: ${event.head_ref_name || 'Unknown'}`;
+              eventDetails = {
+                branch: event.head_ref_name || 'Unknown',
+                commitId: event.head_commit_id || null
+              };
+              break;
+              
+            case 'base_ref_changed':
+              eventSummary = `Base branch changed to: ${event.base_ref_name || 'Unknown'}`;
+              eventDetails = {
+                branch: event.base_ref_name || 'Unknown'
+              };
+              break;
+              
+            case 'closed':
+              eventSummary = 'Issue closed';
+              eventDetails = {};
+              break;
+              
+            case 'reopened':
+              eventSummary = 'Issue reopened';
+              eventDetails = {};
+              break;
+              
+            case 'added_to_project':
+            case 'moved_columns_in_project':
+            case 'removed_from_project':
+              let projectName = 'Unknown';
+              let columnName = '';
+              
+              if (event.project_card && event.project_card.project) {
+                projectName = event.project_card.project.name || 'Unknown';
+                if (event.project_card.column) {
+                  columnName = event.project_card.column.name || '';
                 }
-              },
-              upsert: true
-            }
-          }));
-  
-          if (bulkOps.length > 0) {
-            await IssueHistory.bulkWrite(bulkOps);
+              }
+              
+              eventSummary = `${event.event === 'added_to_project' ? 'Added to' : 
+                             event.event === 'moved_columns_in_project' ? 'Moved in' : 
+                             'Removed from'} project: ${projectName}${columnName ? ` (${columnName})` : ''}`;
+              eventDetails = {
+                project: projectName,
+                column: columnName
+              };
+              break;
+              
+            default:
+              eventSummary = `${event.event}`;
+              eventDetails = {};
+              break;
           }
-  
-          page++;
-          await new Promise(resolve => setTimeout(resolve, 500));
-        } catch (error) {
-          console.error(`Error fetching events for issue #${issueNumber}:`, error.message);
-          if (error.response) {
-            console.error(`Status: ${error.response.status}, Data:`, error.response.data);
+
+          // Add standardized fields to the event data
+          eventData.summary = eventSummary;
+          eventData.details = eventDetails;
+
+          try {
+            // Save the event with standardized fields
+            await IssueHistory.findOneAndUpdate(
+              { githubId: eventData.githubId, userId: this.userId },
+              eventData,
+              { upsert: true, new: true }
+            );
+          } catch (saveError) {
+            console.error(`Error saving event with ID ${eventData.githubId}:`, saveError.message);
+            console.error('Event data:', JSON.stringify(eventData, null, 2));
           }
-          hasMoreEvents = false;
+        }
+      } catch (error) {
+        console.error(`Error fetching timeline for issue #${issueNumber}:`, error.message);
+        if (error.response) {
+          console.error(`Status: ${error.response.status}, Data:`, error.response.data);
         }
       }
     } catch (error) {
@@ -748,12 +980,36 @@ class GithubSyncService {
       }
       
       const organizations = await Organization.find({ userId: this.userId });
+      const USER_LIMIT = 20;
       
       for (const org of organizations) {
+        // Skip the OpenSource organization as it's handled separately
+        if (org.name === 'OpenSource') {
+          console.log('Skipping OpenSource organization - this is handled separately');
+          continue;
+        }
+        
+        // Check how many users we already have for this organization
+        const existingUserCount = await OrganizationUser.countDocuments({
+          organizationId: org._id,
+          userId: this.userId
+        });
+        
+        // If we already have 20 or more users, skip adding more
+        if (existingUserCount >= USER_LIMIT) {
+          console.log(`Organization ${org.name} already has ${existingUserCount} users, which meets or exceeds the limit of ${USER_LIMIT}. Skipping user fetch.`);
+          continue;
+        }
+        
+        // Calculate how many more users we can add
+        const remainingUserSlots = USER_LIMIT - existingUserCount;
+        console.log(`Can add up to ${remainingUserSlots} more users to ${org.name} to reach the limit of ${USER_LIMIT}`);
+        
         let page = 1;
         let hasMoreUsers = true;
+        let addedUsers = 0;
         
-        while (hasMoreUsers) {
+        while (hasMoreUsers && addedUsers < remainingUserSlots) {
           try {
             const usersResponse = await axios({
               method: 'GET',
@@ -775,24 +1031,43 @@ class GithubSyncService {
               hasMoreUsers = false;
             }
             
-            for (const user of users) {
-              await OrganizationUser.findOneAndUpdate(
-                { 
-                  githubId: user.id, 
-                  organizationId: org._id,
-                  userId: this.userId 
-                },
-                {
+            // Process only as many users as we need to reach the limit
+            for (let i = 0; i < users.length && addedUsers < remainingUserSlots; i++) {
+              const user = users[i];
+              
+              // Check if this user already exists
+              const existingUser = await OrganizationUser.findOne({
+                githubId: user.id, 
+                organizationId: org._id,
+                userId: this.userId
+              });
+              
+              if (!existingUser) {
+                await OrganizationUser.create({
                   githubId: user.id,
                   login: user.login,
-                  node_id: user.node_id,
                   avatar_url: user.avatar_url,
                   url: user.url,
                   organizationId: org._id,
                   userId: this.userId
-                },
-                { upsert: true, new: true }
-              );
+                });
+                
+                addedUsers++;
+                console.log(`Added user: ${user.login} (${addedUsers}/${remainingUserSlots})`);
+                
+                // If we've reached the user limit, break out
+                if (addedUsers >= remainingUserSlots) {
+                  console.log(`Reached user limit of ${USER_LIMIT} for organization ${org.name}. Stopping user fetch.`);
+                  break;
+                }
+              } else {
+                console.log(`User ${user.login} already exists in organization ${org.name}, skipping.`);
+              }
+            }
+            
+            // If we've reached the user limit or processed all users, break out
+            if (addedUsers >= remainingUserSlots) {
+              break;
             }
             
             page++;
@@ -806,6 +1081,8 @@ class GithubSyncService {
             hasMoreUsers = false;
           }
         }
+        
+        console.log(`Completed fetching users for organization ${org.name}. Added ${addedUsers} new users.`);
       }
       
       console.log(`Organization users sync completed`);
@@ -865,6 +1142,12 @@ class GithubSyncService {
         return true;
       }
 
+      // Track total counts across all repos
+      let totalPRCount = 0;
+      let totalIssueCount = 0;
+      const PR_LIMIT = 2000;
+      const ISSUE_LIMIT = 600;
+
       for (const { owner, repo } of openSourceRepos) {
         try {
           console.log(`Fetching ${owner}/${repo}`);
@@ -886,7 +1169,6 @@ class GithubSyncService {
             existingRepo = await Repository.create({
               name: repoData.name,
               repoId: repoData.id,
-              node_id: repoData.node_id,
               fullName: repoData.full_name,
               description: repoData.description,
               url: repoData.url,
@@ -917,7 +1199,7 @@ class GithubSyncService {
           let page = 1;
           let hasMorePRs = true;
           
-          while (hasMorePRs) {
+          while (hasMorePRs && totalPRCount < PR_LIMIT) {
             const pullsResponse = await axios.get(`https://api.github.com/repos/${owner}/${repo}/pulls`, {
               headers,
               params: { 
@@ -947,23 +1229,23 @@ class GithubSyncService {
               hasMorePRs = false;
             }
             
-            for (const pull of pulls) {
-              // const existingPRCount = await PullRequest.countDocuments({
-              //   userId: this.userId
-              // });
-
-              // if (existingPRCount >= 1000) {
-              //   console.log(`Skipping sync: Already ${existingPRCount} PRs exist for`);
-              //   hasMorePRs = false;
-              //   break;
-              // }
-
+            // Calculate how many PRs we can process from this batch
+            const remainingPRs = PR_LIMIT - totalPRCount;
+            const prsToProcess = Math.min(pulls.length, remainingPRs);
+            
+            for (let i = 0; i < prsToProcess; i++) {
+              const pull = pulls[i];
+              totalPRCount++;
+              
               const existingPR = await PullRequest.findOne({ 
                 githubId: pull.id,
                 userId: this.userId 
               });
               
               if (!existingPR) {
+                // Fetch commits for this PR
+                const prCommits = await this.fetchPullRequestCommits(`${owner}/${repo}`, pull.number, existingRepo._id);
+                
                 await PullRequest.create({
                   githubId: pull.id,
                   number: pull.number,
@@ -974,39 +1256,18 @@ class GithubSyncService {
                   user: pull.user ? {
                     login: pull.user.login,
                     id: pull.user.id,
-                    node_id: pull.user.node_id,
                     avatar_url: pull.user.avatar_url
                   } : null,
                   created_at: pull.created_at,
-                  updated_at: pull.updated_at,
                   closed_at: pull.closed_at,
-                  merged_at: pull.merged_at,
-                  merge_commit_sha: pull.merge_commit_sha,
-                  assignee: pull.assignee,
-                  assignees: pull.assignees?.map(assignee => ({
-                    id: assignee.id,
-                    node_id: assignee.node_id,
-                    url: assignee.url,
-                    login: assignee.login,
-                    avatar_url: assignee.avatar_url
-                  })),
-                  requested_reviewers: pull.requested_reviewers?.map(reviewer => ({
-                    id: reviewer.id,
-                    node_id: reviewer.node_id,
-                    url: reviewer.url,
-                    login: reviewer.login,
-                    avatar_url: reviewer.avatar_url
-                  })),
-                  requested_teams: pull.requested_teams?.map(team => ({
-                    id: team.id,
-                    node_id: team.node_id,
-                    url: team.url,
-                    name: team.name
-                  })),
+                  assignee: pull.assignee ? {
+                    login: pull.assignee.login,
+                    id: pull.assignee.id,
+                    avatar_url: pull.assignee.avatar_url
+                  } : null,
+                  commits: prCommits.map(commit => ({ sha: commit.sha })),
                   labels: pull.labels?.map(label => ({
                     id: label.id,
-                    node_id: label.node_id,
-                    url: label.url,
                     name: label.name,
                     color: label.color,
                     default: label.default,
@@ -1018,6 +1279,12 @@ class GithubSyncService {
               }
             }
             
+            // If we've reached the PR limit, break out
+            if (totalPRCount >= PR_LIMIT) {
+              console.log(`Reached PR limit of ${PR_LIMIT}. Stopping PR fetch.`);
+              break;
+            }
+            
             page++;
             await new Promise(resolve => setTimeout(resolve, 1000));
           }
@@ -1026,7 +1293,7 @@ class GithubSyncService {
           page = 1;
           let hasMoreIssues = true;
           
-          while (hasMoreIssues) {
+          while (hasMoreIssues && totalIssueCount < ISSUE_LIMIT) {
             const issuesResponse = await axios.get(`https://api.github.com/repos/${owner}/${repo}/issues`, {
               headers,
               params: { 
@@ -1050,24 +1317,22 @@ class GithubSyncService {
                 hasMoreIssues = false;
               }
             }
+            
+            // Filter out pull requests (GitHub returns PRs in the issues endpoint)
+            issues = issues.filter(issue => !issue.pull_request);
             console.log(`Issues fetched (page ${page}): ${issues.length}`);
             
             if (issues.length < this.PER_PAGE) {
               hasMoreIssues = false;
             }
             
-            for (const issue of issues) {
-              if (issue.pull_request) continue;
-
-              // const existingIssueCount = await Issue.countDocuments({
-              //   userId: this.userId
-              // });
-
-              // if (existingIssueCount >= 600) {
-              //   console.log(`Skipping sync: Already ${existingIssueCount} issues exist for`);
-              //   hasMoreIssues = false;
-              //   break;
-              // }
+            // Calculate how many issues we can process from this batch
+            const remainingIssues = ISSUE_LIMIT - totalIssueCount;
+            const issuesToProcess = Math.min(issues.length, remainingIssues);
+            
+            for (let i = 0; i < issuesToProcess; i++) {
+              const issue = issues[i];
+              totalIssueCount++;
               
               const existingIssue = await Issue.findOne({ 
                 githubId: issue.id,
@@ -1075,24 +1340,19 @@ class GithubSyncService {
               });
               
               if (!existingIssue) {
-                await Issue.create({
+                const savedIssue = await Issue.create({
                   githubId: issue.id,
                   url: issue.url,
                   repository_url: issue.repository_url,
-                  labels_url: issue.labels_url,
-                  node_id: issue.node_id,
                   number: issue.number,
                   title: issue.title,
                   user: issue.user ? {
                     login: issue.user.login,
                     id: issue.user.id,
-                    node_id: issue.user.node_id,
                     avatar_url: issue.user.avatar_url
                   } : null,
                   labels: issue.labels?.map(label => ({
                     id: label.id,
-                    node_id: label.node_id,
-                    url: label.url,
                     name: label.name,
                     color: label.color,
                     default: label.default,
@@ -1100,35 +1360,21 @@ class GithubSyncService {
                   })),
                   state: issue.state,
                   created_at: issue.created_at,
-                  updated_at: issue.updated_at,
                   author_association: issue.author_association,
-                  type: issue.type,
                   draft: issue.draft,
                   pull_request: issue.pull_request ? {
                     url: issue.pull_request.url,
                     html_url: issue.pull_request.html_url,
                     diff_url: issue.pull_request.diff_url,
-                    patch_url: issue.pull_request.patch_url,
-                    merged_at: issue.pull_request.merged_at
+                    patch_url: issue.pull_request.patch_url
                   } : null,
                   body: issue.body,
                   closed_at: issue.closed_at,
-                  closed_by: issue.closed_by,
-                  reactions: issue.reactions ? {
-                    url: issue.reactions.url,
-                    total_count: issue.reactions.total_count,
-                    "+1": issue.reactions["+1"],
-                    "-1": issue.reactions["-1"],
-                    laugh: issue.reactions.laugh,
-                    hooray: issue.reactions.hooray,
-                    confused: issue.reactions.confused,
-                    heart: issue.reactions.heart,
-                    rocket: issue.reactions.rocket,
-                    eyes: issue.reactions.eyes
+                  closed_by: issue.closed_by ? {
+                    id: issue.closed_by.id,
+                    login: issue.closed_by.login,
+                    avatar_url: issue.closed_by.avatar_url
                   } : null,
-                  timeline_url: issue.timeline_url,
-                  performed_via_github_app: issue.performed_via_github_app,
-                  state_reason: issue.state_reason,
                   repositoryId: existingRepo._id,
                   userId: this.userId
                 });
@@ -1136,10 +1382,17 @@ class GithubSyncService {
                 await this.syncIssueChangelogs(
                   `${owner}/${repo}`, 
                   issue.number, 
-                  issue.id, 
-                  existingRepo._id
+                  savedIssue._id, 
+                  existingRepo._id,
+                  issue.id
                 );
               }
+            }
+            
+            // If we've reached the issue limit, break out
+            if (totalIssueCount >= ISSUE_LIMIT) {
+              console.log(`Reached issue limit of ${ISSUE_LIMIT}. Stopping issue fetch.`);
+              break;
             }
             
             page++;
@@ -1153,7 +1406,7 @@ class GithubSyncService {
         }
       }
       
-      console.log(`Open source repositories sync completed`);
+      console.log(`Open source repositories sync completed. Fetched ${totalPRCount} PRs and ${totalIssueCount} issues.`);
       return true;
     } catch (error) {
       console.error('Error in fetchOpenSourceRepoData:', error);
@@ -1173,10 +1426,28 @@ class GithubSyncService {
         return;
       }
       
+      // Check how many users we already have for this organization
+      const USER_LIMIT = 20;
+      const existingUserCount = await OrganizationUser.countDocuments({
+        organizationId: organizationId,
+        userId: this.userId
+      });
+      
+      // If we already have 20 or more users, skip adding more
+      if (existingUserCount >= USER_LIMIT) {
+        console.log(`Organization already has ${existingUserCount} users, which meets or exceeds the limit of ${USER_LIMIT}. Skipping contributor fetch.`);
+        return;
+      }
+      
+      // Calculate how many more users we can add
+      const remainingUserSlots = USER_LIMIT - existingUserCount;
+      console.log(`Can add up to ${remainingUserSlots} more contributors to reach the limit of ${USER_LIMIT}`);
+      
       let page = 1;
       let hasMoreContributors = true;
+      let addedUsers = 0;
       
-      while (hasMoreContributors) {
+      while (hasMoreContributors && addedUsers < remainingUserSlots) {
         try {
           const headers = {
             Authorization: `token ${this.accessToken || process.env.GITHUB_TOKEN}`,
@@ -1198,31 +1469,42 @@ class GithubSyncService {
             hasMoreContributors = false;
           }
           
-          for (const contributor of contributors) {
+          // Process only as many contributors as we need to reach the limit
+          for (let i = 0; i < contributors.length && addedUsers < remainingUserSlots; i++) {
+            const contributor = contributors[i];
             // For each contributor, fetch detailed user info
             try {
               const userResponse = await axios.get(`https://api.github.com/users/${contributor.login}`, { headers });
               const userData = userResponse.data;
               
-              await OrganizationUser.findOneAndUpdate(
-                { 
-                  githubId: userData.id, 
-                  organizationId: organizationId,
-                  userId: this.userId 
-                },
-                {
+              // Check if this user already exists
+              const existingUser = await OrganizationUser.findOne({ 
+                githubId: userData.id, 
+                organizationId: organizationId,
+                userId: this.userId 
+              });
+              
+              if (!existingUser) {
+                await OrganizationUser.create({
                   githubId: userData.id,
                   login: userData.login,
-                  node_id: userData.node_id,
                   avatar_url: userData.avatar_url,
                   url: userData.url,
                   organizationId: organizationId,
                   userId: this.userId
-                },
-                { upsert: true, new: true }
-              );
-              
-              console.log(`Added contributor: ${userData.login}`);
+                });
+                
+                addedUsers++;
+                console.log(`Added contributor: ${userData.login} (${addedUsers}/${remainingUserSlots})`);
+                
+                // If we've reached the user limit, break out
+                if (addedUsers >= remainingUserSlots) {
+                  console.log(`Reached user limit of ${USER_LIMIT}. Stopping contributor fetch.`);
+                  break;
+                }
+              } else {
+                console.log(`Contributor ${userData.login} already exists, skipping.`);
+              }
               
               // Rate limiting - pause between user requests
               await new Promise(resolve => setTimeout(resolve, 500));
@@ -1234,6 +1516,11 @@ class GithubSyncService {
                 await new Promise(resolve => setTimeout(resolve, 60000)); // Wait 1 minute
               }
             }
+          }
+          
+          // If we've reached the user limit or processed all contributors, break out
+          if (addedUsers >= remainingUserSlots) {
+            break;
           }
           
           page++;
@@ -1248,7 +1535,7 @@ class GithubSyncService {
         }
       }
       
-      console.log(`Completed fetching contributors for ${owner}/${repo}`);
+      console.log(`Completed fetching contributors for ${owner}/${repo}. Added ${addedUsers} new contributors.`);
     } catch (error) {
       console.error(`Error in fetchOpenSourceRepoMembers for ${owner}/${repo}:`, error);
     }
