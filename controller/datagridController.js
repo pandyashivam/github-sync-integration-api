@@ -740,14 +740,15 @@ exports.getRelationalData = async (req, res) => {
       });
     }
     
+    // Build repository query
     let repositoryQuery = { userId: new ObjectId(userId) };
     if (repoId) {
       repositoryQuery._id = new ObjectId(repoId);
     }
     
+    // Get repositories
     const repositories = await mongoose.models.Repository.find(repositoryQuery)
-      .select('_id name full_name description html_url')
-      .sort({ name: 1 })
+      .select('_id name full_name')
       .lean();
     
     if (repositories.length === 0) {
@@ -762,298 +763,282 @@ exports.getRelationalData = async (req, res) => {
       });
     }
     
-    const relationshipData = [];
+    const repoIds = repositories.map(repo => repo._id);
+    const sortDirection = sortOrder === 'asc' ? 1 : -1;
+    const sortStage = { $sort: { [sort]: sortDirection } };
+    
+    // Build search conditions
+    const searchConditions = search ? [
+      { title: { $regex: search, $options: 'i' } },
+      { body: { $regex: search, $options: 'i' } },
+      { state: { $regex: search, $options: 'i' } },
+      { 'user.login': { $regex: search, $options: 'i' } }
+    ] : [];
+    
+    // Initialize results
+    let pullRequestsWithCommits = [];
+    let issuesWithHistory = [];
     let totalPRs = 0;
     let totalIssues = 0;
     
-    let pullRequestFields = [];
-    let issueFields = [];
-    let commitFields = [];
-    let historyFields = [];
-    
-    for (const repo of repositories) {
-      if (repoId && repo._id.toString() !== repoId) {
-        continue;
-      }
-      
-      const repoData = {
-        repositoryId: repo._id,
-        repositoryName: repo.name,
-        repositoryFullName: repo.full_name,
-        pullRequests: [],
-        issues: []
+    // Fetch Pull Requests with Commits if needed
+    if (mongoose.models.PullRequest && (filterType === 'All' || filterType === 'Pull Requests')) {
+      // Build PR match stage
+      const prMatchStage = {
+        userId: new ObjectId(userId),
+        repositoryId: { $in: repoIds }
       };
       
-      if (mongoose.models.PullRequest && (filterType === 'All' || filterType === 'Pull Requests')) {
-        const prMatchStage = {
-          userId: new ObjectId(userId),
-          repositoryId: repo._id
-        };
-        
-        if (mongoose.models.PullRequest) {
-          const advancedFilters = processAdvancedFilters(req.query, mongoose.models.PullRequest);
-          
-          if (Object.keys(advancedFilters).length > 0) {
-            Object.assign(prMatchStage, advancedFilters);
-          }
-        }
-        
-        if (search) {
-          prMatchStage.$or = [
-            { title: { $regex: search, $options: 'i' } },
-            { body: { $regex: search, $options: 'i' } },
-            { state: { $regex: search, $options: 'i' } },
-            { 'user.login': { $regex: search, $options: 'i' } }
-          ];
-        }
-        
-        const prCountResult = await mongoose.models.PullRequest.aggregate([
-          { $match: prMatchStage },
-          { $count: 'total' }
-        ]).exec();
-        
-        const prTotal = prCountResult.length > 0 ? prCountResult[0].total : 0;
-        totalPRs += prTotal;
-        
-        const sortDirection = sortOrder === 'asc' ? 1 : -1;
-        const pullRequests = await mongoose.models.PullRequest.aggregate([
-          { $match: prMatchStage },
-          { $sort: { [sort]: sortDirection } },
-          { $skip: skip },
-          { $limit: limitNum },
-          { 
-            $project: {
-              _id: 1,
-              number: 1,
-              title: 1,
-              body: 1,
-              state: 1,
-              created_at: 1,
-              updated_at: 1,
-              closed_at: 1,
-              merged_at: 1,
-              user: 1,
-              commits: 1,
-              commits_url: 1
-            }
-          }
-        ]).exec();
-        
-        if (pullRequestFields.length === 0 && pullRequests.length > 0) {
-          pullRequestFields = extractDistinctFields(pullRequests)
-            .filter(x => !x.field.startsWith('_') && !x.field.includes('.'));
-        }
-        
-        if (mongoose.models.Commit && pullRequests.length > 0) {
-          const prWithCommits = await Promise.all(pullRequests.map(async (pr) => {
-            let commitDetails = [];
-            
-            if (pr.commits && Array.isArray(pr.commits)) {
-              const commitShas = pr.commits
-                .filter(commit => commit && commit.sha)
-                .map(commit => commit.sha);
-              
-              if (commitShas.length > 0) {
-                const commitMatchStage = {
-                  userId: new ObjectId(userId),
-                  repositoryId: repo._id,
-                  sha: { $in: commitShas }
-                };
-                
-                if (mongoose.models.Commit) {
-                  const advancedFilters = processAdvancedFilters(req.query, mongoose.models.Commit);
-                  
-                  if (Object.keys(advancedFilters).length > 0) {
-                    Object.assign(commitMatchStage, advancedFilters);
-                  }
-                }
-                
-                commitDetails = await mongoose.models.Commit.aggregate([
-                  {
-                    $match: commitMatchStage
-                  },
-                  {
-                    $project: {
-                      _id: 1,
-                      sha: 1,
-                      message: 1,
-                      date: 1,
-                      author: 1
-                    }
-                  }
-                ]).exec();
-                
-                if (commitFields.length === 0 && commitDetails.length > 0) {
-                  commitFields = extractDistinctFields(commitDetails)
-                    .filter(x => !x.field.startsWith('_') && !x.field.includes('.'));
-                }
-              }
-            }
-            
-            return {
-              ...pr,
-              type: 'pullRequest',
-              repositoryId: repo._id,
-              repositoryName: repo.name,
-              repositoryFullName: repo.full_name,
-              commitDetails: commitDetails.map(commit => ({
-                ...commit,
-                type: 'commit',
-                repositoryId: repo._id,
-                repositoryName: repo.name,
-                repositoryFullName: repo.full_name
-              }))
-            };
-          }));
-          
-          repoData.pullRequests = prWithCommits;
-        } else {
-          repoData.pullRequests = pullRequests.map(pr => ({
-            ...pr,
-            type: 'pullRequest',
-            repositoryId: repo._id,
-            repositoryName: repo.name,
-            repositoryFullName: repo.full_name,
-            commitDetails: []
-          }));
-        }
+      if (search && searchConditions.length > 0) {
+        prMatchStage.$or = searchConditions;
       }
       
-      if (mongoose.models.Issue && (filterType === 'All' || filterType === 'Issues')) {
-        const issueMatchStage = {
-          userId: new ObjectId(userId),
-          repositoryId: repo._id
-        };
-        
-        if (mongoose.models.Issue) {
-          const advancedFilters = processAdvancedFilters(req.query, mongoose.models.Issue);
-          
-          if (Object.keys(advancedFilters).length > 0) {
-            Object.assign(issueMatchStage, advancedFilters);
+      // Apply advanced filters
+      const advancedFilters = processAdvancedFilters(req.query, mongoose.models.PullRequest);
+      if (Object.keys(advancedFilters).length > 0) {
+        Object.assign(prMatchStage, advancedFilters);
+      }
+      
+      // Get PR count
+      totalPRs = await mongoose.models.PullRequest.countDocuments(prMatchStage);
+      
+      // Build aggregation pipeline
+      const prPipeline = [
+        { $match: prMatchStage },
+        sortStage,
+        { $skip: skip },
+        { $limit: limitNum },
+        // Join with repositories
+        {
+          $lookup: {
+            from: 'repositories',
+            localField: 'repositoryId',
+            foreignField: '_id',
+            as: 'repository'
+          }
+        },
+        { $unwind: '$repository' },
+        // Project only needed fields
+        {
+          $project: {
+            _id: 1,
+            number: 1,
+            title: 1,
+            body: 1,
+            state: 1,
+            created_at: 1,
+            updated_at: 1,
+            closed_at: 1,
+            user: 1,
+            type: 'pullRequest',
+            repositoryId: 1,
+            repositoryName: '$repository.name',
+            repositoryFullName: '$repository.full_name',
+            commits: 1
           }
         }
-        
-        if (search) {
-          issueMatchStage.$or = [
-            { title: { $regex: search, $options: 'i' } },
-            { body: { $regex: search, $options: 'i' } },
-            { state: { $regex: search, $options: 'i' } },
-            { 'user.login': { $regex: search, $options: 'i' } }
-          ];
-        }
-        
-        const issueCountResult = await mongoose.models.Issue.aggregate([
-          { $match: issueMatchStage },
-          { $count: 'total' }
-        ]).exec();
-        
-        const issueTotal = issueCountResult.length > 0 ? issueCountResult[0].total : 0;
-        totalIssues += issueTotal;
-        
-        const sortDirection = sortOrder === 'asc' ? 1 : -1;
-        const issues = await mongoose.models.Issue.aggregate([
-          { $match: issueMatchStage },
-          { $sort: { [sort]: sortDirection } },
-          { $skip: skip },
-          { $limit: limitNum },
-          { 
-            $project: {
-              _id: 1,
-              number: 1,
-              title: 1,
-              body: 1,
-              state: 1,
-              created_at: 1,
-              updated_at: 1,
-              closed_at: 1,
-              user: 1
-            }
-          }
-        ]).exec();
-        
-        if (issueFields.length === 0 && issues.length > 0) {
-          issueFields = extractDistinctFields(issues)
-            .filter(x => !x.field.startsWith('_') && !x.field.includes('.'));
-        }
-        
-        if (mongoose.models.IssueHistory && issues.length > 0) {
-          const issuesWithHistory = await Promise.all(issues.map(async (issue) => {
-            const historyMatchStage = {
-              userId: new ObjectId(userId),
-              issueId: issue._id
-            };
-
-            if (mongoose.models.IssueHistory) {
-              const advancedFilters = processAdvancedFilters(req.query, mongoose.models.IssueHistory);
-              
-              if (Object.keys(advancedFilters).length > 0) {
-                Object.assign(historyMatchStage, advancedFilters);
+      ];
+      
+      // Add commits lookup if Commit model exists
+      if (mongoose.models.Commit) {
+        prPipeline.push({
+          $lookup: {
+            from: 'commits',
+            let: { 
+              repo_id: '$repositoryId',
+              commit_shas: {
+                $map: {
+                  input: { $ifNull: ['$commits', []] },
+                  as: 'commit',
+                  in: '$$commit.sha'
+                }
               }
-            }
-            
-            const history = await mongoose.models.IssueHistory.aggregate([
+            },
+            pipeline: [
               {
-                $match: historyMatchStage
+                $match: {
+                  $expr: {
+                    $and: [
+                      { $eq: ['$userId', new ObjectId(userId)] },
+                      { $eq: ['$repositoryId', '$$repo_id'] },
+                      { $in: ['$sha', '$$commit_shas'] }
+                    ]
+                  }
+                }
+              },
+              {
+                $project: {
+                  _id: 1,
+                  sha: 1,
+                  message: 1,
+                  date: 1,
+                  author: 1,
+                  type: 'commit'
+                }
+              },
+            ],
+            as: 'commitDetails'
+          }
+        });
+      } else {
+        prPipeline.push({
+          $addFields: {
+            commitDetails: []
+          }
+        });
+      }
+      
+      pullRequestsWithCommits = await mongoose.models.PullRequest.aggregate(prPipeline).exec();
+    }
+    
+    // Fetch Issues with History if needed
+    if (mongoose.models.Issue && (filterType === 'All' || filterType === 'Issues')) {
+      // Build issue match stage
+      const issueMatchStage = {
+        userId: new ObjectId(userId),
+        repositoryId: { $in: repoIds }
+      };
+      
+      if (search && searchConditions.length > 0) {
+        issueMatchStage.$or = searchConditions;
+      }
+      
+      // Apply advanced filters
+      const advancedFilters = processAdvancedFilters(req.query, mongoose.models.Issue);
+      if (Object.keys(advancedFilters).length > 0) {
+        Object.assign(issueMatchStage, advancedFilters);
+      }
+      
+      // Get issue count
+      totalIssues = await mongoose.models.Issue.countDocuments(issueMatchStage);
+      
+      // Build aggregation pipeline
+      const issuePipeline = [
+        { $match: issueMatchStage },
+        sortStage,
+        { $skip: skip },
+        { $limit: limitNum },
+        // Join with repositories
+        {
+          $lookup: {
+            from: 'repositories',
+            localField: 'repositoryId',
+            foreignField: '_id',
+            as: 'repository'
+          }
+        },
+        { $unwind: '$repository' },
+        // Project only needed fields
+        {
+          $project: {
+            _id: 1,
+            number: 1,
+            title: 1,
+            body: 1,
+            state: 1,
+            created_at: 1,
+            updated_at: 1,
+            closed_at: 1,
+            user: 1,
+            type: 'issue',
+            repositoryId: 1,
+            repositoryName: '$repository.name',
+            repositoryFullName: '$repository.full_name'
+          }
+        }
+      ];
+      
+      // Add history lookup if IssueHistory model exists
+      if (mongoose.models.IssueHistory) {
+        issuePipeline.push({
+          $lookup: {
+            from: 'issuehistories',
+            let: { issue_id: '$_id' },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $and: [
+                      { $eq: ['$userId', new ObjectId(userId)] },
+                      { $eq: ['$issueId', '$$issue_id'] }
+                    ]
+                  }
+                }
               },
               { $sort: { created_at: -1 } },
               {
                 $project: {
-                  _id: 1,
-                  event: 1,
+                  id: '$_id',
+                  eventType: '$event',
                   field: 1,
                   from: 1,
                   to: 1,
-                  summary: 1,
-                  actor: 1,
-                  created_at: 1,
-                  details: 1
+                  summary: { $ifNull: ['$summary', '$event'] },
+                  actor: { $ifNull: ['$actor', {login: 'System'}] },
+                  date: '$created_at'
                 }
               }
-            ]).exec();
-            
-            const formattedHistory = history.map(item => ({
-              id: item._id,
-              eventType: item.event,
-              field: item.field,
-              from: item.from,
-              to: item.to,
-              summary: item.summary || `${item.event}`,
-              actor: item.actor ? item.actor.login : 'System',
-              date: item.created_at,
-              details: item.details || {}
-            }));
-            
-            if (historyFields.length === 0 && formattedHistory.length > 0) {
-              historyFields = extractDistinctFields(formattedHistory)
-                .filter(x => !x.field.startsWith('_') && !x.field.includes('.'));
-            }
-            
-            return {
-              ...issue,
-              type: 'issue',
-              repositoryId: repo._id,
-              repositoryName: repo.name,
-              repositoryFullName: repo.full_name,
-              history: formattedHistory || []
-            };
-          }));
-          
-          repoData.issues = issuesWithHistory;
-        } else {
-          repoData.issues = issues.map(issue => ({
-            ...issue,
-            type: 'issue',
-            repositoryId: repo._id,
-            repositoryName: repo.name,
-            repositoryFullName: repo.full_name,
+            ],
+            as: 'history'
+          }
+        });
+      } else {
+        issuePipeline.push({
+          $addFields: {
             history: []
-          }));
-        }
+          }
+        });
       }
       
-      relationshipData.push(repoData);
+      issuesWithHistory = await mongoose.models.Issue.aggregate(issuePipeline).exec();
     }
     
+    // Organize data by repository - use Map for O(1) lookups
+    const repoMap = new Map(repositories.map(repo => [repo._id.toString(), {
+      repositoryId: repo._id,
+      repositoryName: repo.name,
+      repositoryFullName: repo.full_name,
+      pullRequests: [],
+      issues: []
+    }]));
+    
+    // Add PRs and issues to their repositories
+    pullRequestsWithCommits.forEach(pr => {
+      const repoId = pr.repositoryId.toString();
+      if (repoMap.has(repoId)) {
+        repoMap.get(repoId).pullRequests.push(pr);
+      }
+    });
+    
+    issuesWithHistory.forEach(issue => {
+      const repoId = issue.repositoryId.toString();
+      if (repoMap.has(repoId)) {
+        repoMap.get(repoId).issues.push(issue);
+      }
+    });
+    
+    const relationshipData = Array.from(repoMap.values());
+    
+    // Extract field schemas
+    const pullRequestFields = pullRequestsWithCommits.length > 0 ? 
+      extractDistinctFields(pullRequestsWithCommits)
+        .filter(x => !x.field.startsWith('_')) : [];
+    
+    const issueFields = issuesWithHistory.length > 0 ? 
+      extractDistinctFields(issuesWithHistory)
+        .filter(x => !x.field.startsWith('_')) : [];
+    
+    const commitFields = pullRequestsWithCommits.length > 0 && 
+      pullRequestsWithCommits.some(pr => pr.commitDetails?.length > 0) ?
+      extractDistinctFields(pullRequestsWithCommits.flatMap(pr => pr.commitDetails || []))
+        .filter(x => !x.field.startsWith('_')) : [];
+    
+    const historyFields = issuesWithHistory.length > 0 && 
+      issuesWithHistory.some(issue => issue.history?.length > 0) ?
+      extractDistinctFields(issuesWithHistory.flatMap(issue => issue.history || []))
+        .filter(x => !x.field.startsWith('_')) : [];
+    
+    // Calculate total count based on filter type
     let totalCount = 0;
     if (filterType === 'All') {
       totalCount = totalPRs + totalIssues;
@@ -1063,15 +1048,12 @@ exports.getRelationalData = async (req, res) => {
       totalCount = totalIssues;
     }
     
-    pullRequestFields.unshift({ field: 'type', type: 'string' });
-    issueFields.unshift({ field: 'type', type: 'string' });
-    
     return res.status(200).json({
       success: true,
       count: relationshipData.length,
-      totalCount: totalCount,
-      totalPRs: totalPRs,
-      totalIssues: totalIssues,
+      totalCount,
+      totalPRs,
+      totalIssues,
       currentPage: pageNum,
       totalPages: Math.ceil(totalCount / limitNum),
       repositories,
