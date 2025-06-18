@@ -10,5 +10,6 @@ router.get('/user-details/:assigneeId/:modelName', datagridController.getUserDet
 router.get('/global-search/:userId', datagridController.searchAcrossAllCollections);
 router.get('/relational-data/:userId', datagridController.getRelationalData);
 router.get('/repositories/:userId', datagridController.getUserRepositories);
+router.get('/distinct-values/:userId', datagridController.getDistinctFieldValues);
 
 module.exports = router; 

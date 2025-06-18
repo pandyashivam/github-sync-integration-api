@@ -392,14 +392,41 @@ function processAdvancedFilters(queryParams, Model) {
       return;
     }
     
+    // Handle special case for user field filters with multiple values (in/notIn)
+    if (key.endsWith('_in') || key.endsWith('_notIn')) {
+      const baseField = key.split('_').slice(0, -1).join('_');
+      const operation = key.split('_').pop();
+      const values = queryParams[key].split(',');
+      
+      if (values.length > 0) {
+        if (operation === 'in') {
+          advancedFilters[baseField] = { $in: values };
+        } else if (operation === 'notIn') {
+          advancedFilters[baseField] = { $nin: values };
+        }
+      }
+      return;
+    }
+    
     if (key.includes('_')) {
       const [fieldName, operation] = key.split('_');
       
-      if (!Model.schema || !Model.schema.paths || !Model.schema.paths[fieldName]) {
+      // Skip model schema check for nested fields (e.g., user.login)
+      const isNestedField = fieldName.includes('.');
+      const fieldExists = isNestedField || 
+                         (Model.schema && 
+                          Model.schema.paths && 
+                          Model.schema.paths[fieldName]);
+      
+      if (!fieldExists) {
         return;
       }
       
-      const fieldType = Model.schema.paths[fieldName].instance;
+      // Get field type if available
+      const fieldType = isNestedField ? 'string' : 
+                        (Model.schema.paths[fieldName] ? 
+                         Model.schema.paths[fieldName].instance.toLowerCase() : 'string');
+      
       const value = queryParams[key];
       
       switch (operation) {
@@ -419,35 +446,61 @@ function processAdvancedFilters(queryParams, Model) {
           advancedFilters[fieldName] = { $in: ['', null] };
           break;
         case 'ne':
-          if (fieldType === 'Number') {
+          if (fieldType === 'number') {
             advancedFilters[fieldName] = { $ne: Number(value) };
           } else {
             advancedFilters[fieldName] = { $ne: value };
           }
           break;
         case 'gt':
-          advancedFilters[fieldName] = { $gt: Number(value) };
+          if (fieldType === 'date' && !isNaN(Date.parse(value))) {
+            advancedFilters[fieldName] = { $gt: new Date(value) };
+          } else {
+            advancedFilters[fieldName] = { $gt: Number(value) };
+          }
           break;
         case 'gte':
-          advancedFilters[fieldName] = { $gte: Number(value) };
+          if (fieldType === 'date' && !isNaN(Date.parse(value))) {
+            advancedFilters[fieldName] = { $gte: new Date(value) };
+          } else {
+            advancedFilters[fieldName] = { $gte: Number(value) };
+          }
           break;
         case 'lt':
-          advancedFilters[fieldName] = { $lt: Number(value) };
+          if (fieldType === 'date' && !isNaN(Date.parse(value))) {
+            advancedFilters[fieldName] = { $lt: new Date(value) };
+          } else {
+            advancedFilters[fieldName] = { $lt: Number(value) };
+          }
           break;
         case 'lte':
-          advancedFilters[fieldName] = { $lte: Number(value) };
+          if (fieldType === 'date' && !isNaN(Date.parse(value))) {
+            advancedFilters[fieldName] = { $lte: new Date(value) };
+          } else {
+            advancedFilters[fieldName] = { $lte: Number(value) };
+          }
           break;
       }
     } else {
-      if (Model.schema && Model.schema.paths && Model.schema.paths[key]) {
-        const fieldType = Model.schema.paths[key].instance;
+      // For non-underscore keys, check if it's a valid field
+      const isNestedField = key.includes('.');
+      const fieldExists = isNestedField || 
+                         (Model.schema && 
+                          Model.schema.paths && 
+                          Model.schema.paths[key]);
+      
+      if (fieldExists) {
+        const fieldType = isNestedField ? 'string' : 
+                          (Model.schema.paths[key] ? 
+                           Model.schema.paths[key].instance.toLowerCase() : 'string');
+        
         const value = queryParams[key];
         
-        if (fieldType === 'Number') {
+        if (fieldType === 'number') {
           advancedFilters[key] = Number(value);
-        } else if (fieldType === 'Boolean') {
+        } else if (fieldType === 'boolean') {
           advancedFilters[key] = value === 'true';
-        } else if (fieldType === 'Date') {
+        } else if (fieldType === 'date' && !isNaN(Date.parse(value))) {
           let date = new Date(value);
           date.setHours(0, 0, 0, 0);
           let nextDay = new Date(date);
@@ -1280,6 +1333,137 @@ exports.getUserRepositories = async (req, res) => {
     
   } catch (error) {
     console.error('Error fetching user repositories:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Server Error'
+    });
+  }
+}; 
+
+exports.getDistinctFieldValues = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { repoId, filterType, fieldPath } = req.query;
+    
+    console.log('getDistinctFieldValues called with params:', {
+      userId,
+      repoId,
+      filterType,
+      fieldPath
+    });
+    
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'User ID is required'
+      });
+    }
+    
+    if (!fieldPath || fieldPath === 'undefined' || fieldPath === 'null') {
+      return res.status(400).json({
+        success: false,
+        error: 'Field path is required'
+      });
+    }
+    
+    // Determine which model to use based on filterType
+    let Model;
+    if (filterType === 'Issues') {
+      Model = mongoose.models.Issue;
+    } else {
+      // Default to PullRequest
+      Model = mongoose.models.PullRequest;
+    }
+    
+    if (!Model) {
+      return res.status(404).json({
+        success: false,
+        error: `Model for ${filterType} not found`
+      });
+    }
+    
+    // Build query
+    const query = { userId: new ObjectId(userId) };
+    if (repoId && repoId !== 'undefined' && repoId !== 'null') {
+      query.repositoryId = new ObjectId(repoId);
+    }
+    
+    console.log(`Getting distinct values for field: ${fieldPath}`);
+    console.log('Query:', JSON.stringify(query));
+    
+    // For nested fields like user.login, we need to use aggregation
+    const isNestedField = fieldPath.includes('.');
+    
+    let distinctValues = [];
+    
+    if (isNestedField) {
+      // For nested fields, use aggregation
+      const fieldParts = fieldPath.split('.');
+      const rootField = fieldParts[0];
+      
+      // For user fields, get the full user objects
+      if (rootField === 'user' || rootField === 'assignee' || rootField === 'closed_by' || fieldPath.includes('login')) {
+        console.log(`Processing user field: ${fieldPath}`);
+        
+        // Get sample documents to extract the full user objects
+        const sampleDocs = await Model.find(query).limit(100).lean();
+        console.log(`Found ${sampleDocs.length} sample documents`);
+        
+        // Create a map of login to full user object
+        const userMap = new Map();
+        
+        sampleDocs.forEach(doc => {
+          let obj = doc;
+          
+          // Get the root object (user, assignee, etc.)
+          if (obj && obj[rootField]) {
+            obj = obj[rootField];
+            
+            if (obj && obj.login && !userMap.has(obj.login)) {
+              userMap.set(obj.login, {
+                login: obj.login,
+                avatar_url: obj.avatar_url || null,
+                id: obj.id || null,
+                name: obj.name || obj.login
+              });
+            }
+          }
+        });
+        
+        distinctValues = Array.from(userMap.values());
+        console.log(`Found ${distinctValues.length} distinct users for field ${fieldPath}`);
+      } else {
+        // For other nested fields, use aggregation to get distinct values
+        const pipeline = [
+          { $match: query },
+          { $group: { _id: `$${fieldPath}`, count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+          { $limit: 100 } // Limit to prevent too many options
+        ];
+        
+        const results = await Model.aggregate(pipeline);
+        
+        // Extract the field values
+        const fieldValues = results.map(r => r._id).filter(Boolean);
+        
+        distinctValues = fieldValues.map(value => ({ value }));
+        console.log(`Found ${distinctValues.length} distinct values for field ${fieldPath}`);
+      }
+    } else {
+      // For non-nested fields, use distinct
+      const values = await Model.distinct(fieldPath, query);
+      distinctValues = values.filter(Boolean).map(value => ({ [fieldPath]: value }));
+      console.log(`Found ${distinctValues.length} distinct values for field ${fieldPath}`);
+    }
+    
+    return res.status(200).json({
+      success: true,
+      count: distinctValues.length,
+      data: distinctValues
+    });
+    
+  } catch (error) {
+    console.error('Error fetching distinct field values:', error);
     return res.status(500).json({
       success: false,
       error: 'Server Error'
