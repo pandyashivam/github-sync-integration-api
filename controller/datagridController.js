@@ -632,13 +632,11 @@ exports.searchAcrossAllCollections = async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 25;
     const skip = (page - 1) * limit;
     
-    // Get all models except system models
     let modelNames = Object.keys(mongoose.models).filter(model => 
       !model.startsWith('_') && 
       !['User', 'Session'].includes(model)
     );
     
-    // If a specific collection name is provided, only search in that collection
     if (collectionName && modelNames.includes(collectionName)) {
       modelNames = [collectionName];
     }
@@ -646,15 +644,12 @@ exports.searchAcrossAllCollections = async (req, res) => {
     let allResults = [];
     let totalMatchCount = 0;
     
-    // Search across all models
     for (const modelName of modelNames) {
       const Model = mongoose.models[modelName];
       
-      // Skip models without a userId field (not related to users)
       const hasUserIdField = Model.schema.path('userId');
       if (!hasUserIdField) continue;
-      
-      // Get all searchable string fields
+
       const stringFields = Object.keys(Model.schema.paths).filter(
         field => {
           const fieldType = Model.schema.paths[field].instance;
@@ -664,33 +659,27 @@ exports.searchAcrossAllCollections = async (req, res) => {
       
       if (stringFields.length === 0) continue;
       
-      // Build search query
       const searchConditions = stringFields.map(field => ({
         [field]: { $regex: search, $options: 'i' }
       }));
       
-      // Add user filter
       const query = {
         userId: new ObjectId(userId),
         $or: searchConditions
       };
       
-      // Count matching documents
       const total = await Model.countDocuments(query);
       totalMatchCount += total;
       
       if (total > 0) {
-        // Get matching documents (paginated per collection)
         const results = await Model.find(query)
           .select(excludedFields)
           .skip(skip)
           .limit(limit)
           .lean();
         
-        // Fields extraction
         const fields = extractDistinctFields(results).filter(x => !x.field.startsWith('_'));
         
-        // Prepare response object for this collection
         allResults.push({
           collectionName: modelName,
           count: results.length,
@@ -703,11 +692,8 @@ exports.searchAcrossAllCollections = async (req, res) => {
       }
     }
     
-    // Sort collections by totalRecords (highest first)
     allResults.sort((a, b) => b.totalRecords - a.totalRecords);
     
-    // If filtering by collection name, we don't need to paginate collections
-    // Otherwise, paginate collections (not records)
     if (!collectionName) {
       allResults = allResults.slice(skip, skip + limit);
     }
@@ -746,8 +732,7 @@ exports.getRelationalData = async (req, res) => {
     const pageNum = parseInt(page, 10);
     const limitNum = parseInt(limit, 10);
     const skip = (pageNum - 1) * limitNum;
-    
-    // Check if Repository model exists
+
     if (!mongoose.models.Repository) {
       return res.status(404).json({
         success: false,
@@ -755,7 +740,6 @@ exports.getRelationalData = async (req, res) => {
       });
     }
     
-    // Get repository information first
     let repositoryQuery = { userId: new ObjectId(userId) };
     if (repoId) {
       repositoryQuery._id = new ObjectId(repoId);
@@ -778,24 +762,20 @@ exports.getRelationalData = async (req, res) => {
       });
     }
     
-    // Process each repository
     const relationshipData = [];
     let totalPRs = 0;
     let totalIssues = 0;
     
-    // Define field structures for each data type
     let pullRequestFields = [];
     let issueFields = [];
     let commitFields = [];
     let historyFields = [];
     
     for (const repo of repositories) {
-      // Skip if not the selected repo when repoId is provided
       if (repoId && repo._id.toString() !== repoId) {
         continue;
       }
       
-      // Create the repository data structure
       const repoData = {
         repositoryId: repo._id,
         repositoryName: repo.name,
@@ -804,14 +784,12 @@ exports.getRelationalData = async (req, res) => {
         issues: []
       };
       
-      // Fetch pull requests using aggregation
       if (mongoose.models.PullRequest && (filterType === 'All' || filterType === 'Pull Requests')) {
         const prMatchStage = {
           userId: new ObjectId(userId),
           repositoryId: repo._id
         };
         
-        // Process advanced filters for PullRequest model
         if (mongoose.models.PullRequest) {
           const advancedFilters = processAdvancedFilters(req.query, mongoose.models.PullRequest);
           
@@ -829,7 +807,6 @@ exports.getRelationalData = async (req, res) => {
           ];
         }
         
-        // Count total PRs first (for pagination)
         const prCountResult = await mongoose.models.PullRequest.aggregate([
           { $match: prMatchStage },
           { $count: 'total' }
@@ -838,7 +815,6 @@ exports.getRelationalData = async (req, res) => {
         const prTotal = prCountResult.length > 0 ? prCountResult[0].total : 0;
         totalPRs += prTotal;
         
-        // Then fetch the paginated PRs - use inclusion projection only
         const sortDirection = sortOrder === 'asc' ? 1 : -1;
         const pullRequests = await mongoose.models.PullRequest.aggregate([
           { $match: prMatchStage },
@@ -863,16 +839,13 @@ exports.getRelationalData = async (req, res) => {
           }
         ]).exec();
         
-        // Extract fields from pull requests if not already done
         if (pullRequestFields.length === 0 && pullRequests.length > 0) {
           pullRequestFields = extractDistinctFields(pullRequests)
             .filter(x => !x.field.startsWith('_') && !x.field.includes('.'));
         }
         
-        // For each PR, fetch its associated commits
         if (mongoose.models.Commit && pullRequests.length > 0) {
           const prWithCommits = await Promise.all(pullRequests.map(async (pr) => {
-            // Get commit SHAs from the PR if available
             let commitDetails = [];
             
             if (pr.commits && Array.isArray(pr.commits)) {
@@ -881,14 +854,12 @@ exports.getRelationalData = async (req, res) => {
                 .map(commit => commit.sha);
               
               if (commitShas.length > 0) {
-                // Fetch commits by SHA using aggregation - use inclusion projection
                 const commitMatchStage = {
                   userId: new ObjectId(userId),
                   repositoryId: repo._id,
                   sha: { $in: commitShas }
                 };
                 
-                // Process advanced filters for Commit model
                 if (mongoose.models.Commit) {
                   const advancedFilters = processAdvancedFilters(req.query, mongoose.models.Commit);
                   
@@ -912,7 +883,6 @@ exports.getRelationalData = async (req, res) => {
                   }
                 ]).exec();
                 
-                // Extract fields from commits if not already done
                 if (commitFields.length === 0 && commitDetails.length > 0) {
                   commitFields = extractDistinctFields(commitDetails)
                     .filter(x => !x.field.startsWith('_') && !x.field.includes('.'));
@@ -949,14 +919,12 @@ exports.getRelationalData = async (req, res) => {
         }
       }
       
-      // Fetch issues using aggregation
       if (mongoose.models.Issue && (filterType === 'All' || filterType === 'Issues')) {
         const issueMatchStage = {
           userId: new ObjectId(userId),
           repositoryId: repo._id
         };
         
-        // Process advanced filters for Issue model
         if (mongoose.models.Issue) {
           const advancedFilters = processAdvancedFilters(req.query, mongoose.models.Issue);
           
@@ -974,7 +942,6 @@ exports.getRelationalData = async (req, res) => {
           ];
         }
         
-        // Count total issues first (for pagination)
         const issueCountResult = await mongoose.models.Issue.aggregate([
           { $match: issueMatchStage },
           { $count: 'total' }
@@ -983,7 +950,6 @@ exports.getRelationalData = async (req, res) => {
         const issueTotal = issueCountResult.length > 0 ? issueCountResult[0].total : 0;
         totalIssues += issueTotal;
         
-        // Then fetch the paginated issues - use inclusion projection
         const sortDirection = sortOrder === 'asc' ? 1 : -1;
         const issues = await mongoose.models.Issue.aggregate([
           { $match: issueMatchStage },
@@ -1005,22 +971,18 @@ exports.getRelationalData = async (req, res) => {
           }
         ]).exec();
         
-        // Extract fields from issues if not already done
         if (issueFields.length === 0 && issues.length > 0) {
           issueFields = extractDistinctFields(issues)
             .filter(x => !x.field.startsWith('_') && !x.field.includes('.'));
         }
         
-        // For each issue, fetch its history
         if (mongoose.models.IssueHistory && issues.length > 0) {
           const issuesWithHistory = await Promise.all(issues.map(async (issue) => {
-            // Fetch history for this issue using aggregation
             const historyMatchStage = {
               userId: new ObjectId(userId),
               issueId: issue._id
             };
-            
-            // Process advanced filters for IssueHistory model
+
             if (mongoose.models.IssueHistory) {
               const advancedFilters = processAdvancedFilters(req.query, mongoose.models.IssueHistory);
               
@@ -1049,7 +1011,6 @@ exports.getRelationalData = async (req, res) => {
               }
             ]).exec();
             
-            // Format history for display
             const formattedHistory = history.map(item => ({
               id: item._id,
               eventType: item.event,
@@ -1062,7 +1023,6 @@ exports.getRelationalData = async (req, res) => {
               details: item.details || {}
             }));
             
-            // Extract fields from history if not already done
             if (historyFields.length === 0 && formattedHistory.length > 0) {
               historyFields = extractDistinctFields(formattedHistory)
                 .filter(x => !x.field.startsWith('_') && !x.field.includes('.'));
@@ -1094,7 +1054,6 @@ exports.getRelationalData = async (req, res) => {
       relationshipData.push(repoData);
     }
     
-    // Calculate total count based on filter type
     let totalCount = 0;
     if (filterType === 'All') {
       totalCount = totalPRs + totalIssues;
@@ -1104,7 +1063,6 @@ exports.getRelationalData = async (req, res) => {
       totalCount = totalIssues;
     }
     
-    // Add type field to each field definition
     pullRequestFields.unshift({ field: 'type', type: 'string' });
     issueFields.unshift({ field: 'type', type: 'string' });
     
@@ -1146,7 +1104,6 @@ exports.getUserRepositories = async (req, res) => {
       });
     }
     
-    // Check if Repository model exists
     if (!mongoose.models.Repository) {
       return res.status(404).json({
         success: false,
@@ -1154,7 +1111,6 @@ exports.getUserRepositories = async (req, res) => {
       });
     }
     
-    // Get repositories for the user
     const repositories = await mongoose.models.Repository.find({ userId: new ObjectId(userId) })
       .select('_id name full_name description html_url')
       .sort({ name: 1 })
