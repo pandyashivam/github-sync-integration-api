@@ -1108,6 +1108,23 @@ class GithubSyncService {
         { owner: 'nodejs', repo: 'node' },      
         { owner: 'nestjs', repo: 'nest' }, 
         { owner: 'microsoft', repo: 'vscode' },
+        { owner: 'facebook', repo: 'react' },          
+        { owner: 'vercel', repo: 'next.js' },          
+        { owner: 'angular', repo: 'angular' },         
+        { owner: 'tensorflow', repo: 'tensorflow' },   
+        { owner: 'microsoft', repo: 'TypeScript' },  
+        { owner: 'webpack', repo: 'webpack' },         
+        { owner: 'vuejs', repo: 'vue' },              
+        { owner: 'facebook', repo: 'jest' },           
+        { owner: 'eslint', repo: 'eslint' },           
+        { owner: 'storybookjs', repo: 'storybook' },   
+        { owner: 'reduxjs', repo: 'redux' },           
+        { owner: 'grafana', repo: 'grafana' },       
+        { owner: 'prisma', repo: 'prisma' },           
+        { owner: 'supabase', repo: 'supabase' },      
+        { owner: 'hasura', repo: 'graphql-engine' },   
+        { owner: 'axios', repo: 'axios' },             
+        { owner: 'vitejs', repo: 'vite' },  
       ];
 
       let openSourceOrg = await Organization.findOne({ 
@@ -1145,7 +1162,7 @@ class GithubSyncService {
       // Track total counts across all repos
       let totalPRCount = 0;
       let totalIssueCount = 0;
-      const PR_LIMIT = 2000;
+      const PR_LIMIT = 2001;
       const ISSUE_LIMIT = 600;
 
       for (const { owner, repo } of openSourceRepos) {

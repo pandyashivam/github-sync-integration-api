@@ -326,7 +326,6 @@ function processAdvancedFilters(queryParams, Model) {
       return;
     }
     
-    // Handle special case for date range filters
     if (key === 'closed_at_from' || key === 'closed_at_to') {
       const baseField = 'closed_at';
       console.log(`Processing ${key} filter:`, queryParams[key]);
@@ -337,11 +336,10 @@ function processAdvancedFilters(queryParams, Model) {
       
       if (key === 'closed_at_from' && queryParams[key] && queryParams[key] !== 'null') {
         try {
-          // Parse YYYY-MM-DD format
           const parts = queryParams[key].split('-');
           if (parts.length === 3) {
             const year = parseInt(parts[0]);
-            const month = parseInt(parts[1]) - 1; // Month is 0-indexed in JS Date
+            const month = parseInt(parts[1]) - 1; 
             const day = parseInt(parts[2]);
             
             const fromDate = new Date(year, month, day, 0, 0, 0);
@@ -359,11 +357,10 @@ function processAdvancedFilters(queryParams, Model) {
         }
       } else if (key === 'closed_at_to' && queryParams[key] && queryParams[key] !== 'null') {
         try {
-          // Parse YYYY-MM-DD format
           const parts = queryParams[key].split('-');
           if (parts.length === 3) {
             const year = parseInt(parts[0]);
-            const month = parseInt(parts[1]) - 1; // Month is 0-indexed in JS Date
+            const month = parseInt(parts[1]) - 1; 
             const day = parseInt(parts[2]);
             
             const toDate = new Date(year, month, day, 23, 59, 59);
@@ -383,16 +380,13 @@ function processAdvancedFilters(queryParams, Model) {
       return;
     }
     
-    // Handle special case for state filter
     if (key === 'state_filter' && queryParams[key]) {
-      // Only apply filter if not "all"
       if (queryParams[key].toLowerCase() !== 'all') {
         advancedFilters.state = queryParams[key];
       }
       return;
     }
     
-    // Handle special case for user field filters with multiple values (in/notIn)
     if (key.endsWith('_in') || key.endsWith('_notIn')) {
       const baseField = key.split('_').slice(0, -1).join('_');
       const operation = key.split('_').pop();
@@ -411,7 +405,6 @@ function processAdvancedFilters(queryParams, Model) {
     if (key.includes('_')) {
       const [fieldName, operation] = key.split('_');
       
-      // Skip model schema check for nested fields (e.g., user.login)
       const isNestedField = fieldName.includes('.');
       const fieldExists = isNestedField || 
                          (Model.schema && 
@@ -422,7 +415,6 @@ function processAdvancedFilters(queryParams, Model) {
         return;
       }
       
-      // Get field type if available
       const fieldType = isNestedField ? 'string' : 
                         (Model.schema.paths[fieldName] ? 
                          Model.schema.paths[fieldName].instance.toLowerCase() : 'string');
@@ -482,7 +474,6 @@ function processAdvancedFilters(queryParams, Model) {
           break;
       }
     } else {
-      // For non-underscore keys, check if it's a valid field
       const isNestedField = key.includes('.');
       const fieldExists = isNestedField || 
                          (Model.schema && 
@@ -568,66 +559,7 @@ exports.getUserDetails = async (req, res) => {
       });
     }
     
-    // Process advanced filters from query params
-    const advancedFilters = {};
-    const excludedParams = ['page', 'limit', 'search', 'sort', 'sortOrder'];
-    
-    Object.keys(req.query).forEach(key => {
-      if (excludedParams.includes(key)) {
-        return;
-      }
-      
-      if (key.includes('_')) {
-        const [fieldName, operation] = key.split('_');
-        const value = req.query[key];
-        
-        switch (operation) {
-          case 'contains':
-            advancedFilters[fieldName] = { $regex: value, $options: 'i' };
-            break;
-          case 'notContains':
-            advancedFilters[fieldName] = { $not: { $regex: value, $options: 'i' } };
-            break;
-          case 'startsWith':
-            advancedFilters[fieldName] = { $regex: `^${value}`, $options: 'i' };
-            break;
-          case 'endsWith':
-            advancedFilters[fieldName] = { $regex: `${value}$`, $options: 'i' };
-            break;
-          case 'empty':
-            advancedFilters[fieldName] = { $in: ['', null] };
-            break;
-          case 'ne':
-            if (!isNaN(Number(value))) {
-              advancedFilters[fieldName] = { $ne: Number(value) };
-            } else {
-              advancedFilters[fieldName] = { $ne: value };
-            }
-            break;
-          case 'gt':
-            advancedFilters[fieldName] = { $gt: Number(value) };
-            break;
-          case 'gte':
-            advancedFilters[fieldName] = { $gte: Number(value) };
-            break;
-          case 'lt':
-            advancedFilters[fieldName] = { $lt: Number(value) };
-            break;
-          case 'lte':
-            advancedFilters[fieldName] = { $lte: Number(value) };
-            break;
-        }
-      } else {
-        const value = req.query[key];
-        if (!isNaN(Number(value))) {
-          advancedFilters[key] = Number(value);
-        } else if (value === 'true' || value === 'false') {
-          advancedFilters[key] = value === 'true';
-        } else {
-          advancedFilters[key] = value;
-        }
-      }
-    });
+    const advancedFilters = processAdvancedFilters(req.query, Model);
     
     if (Object.keys(advancedFilters).length > 0) {
       query = { 
@@ -655,7 +587,7 @@ exports.getUserDetails = async (req, res) => {
       } else {
         query = { 
           $and: [
-            query, // Keep the original assigneeId filter
+            query,
             { $or: searchConditions }
           ]
         };
@@ -898,7 +830,6 @@ exports.getRelationalData = async (req, res) => {
     const sortDirection = sortOrder === 'asc' ? 1 : -1;
     const sortStage = { $sort: { [sort]: sortDirection } };
     
-    // Build search conditions
     const searchConditions = search ? [
       { title: { $regex: search, $options: 'i' } },
       { body: { $regex: search, $options: 'i' } },
@@ -906,7 +837,6 @@ exports.getRelationalData = async (req, res) => {
       { 'user.login': { $regex: search, $options: 'i' } }
     ] : [];
     
-    // Get available states for filter dropdown
     let availableStates = ['open', 'closed'];
     if (mongoose.models.PullRequest) {
       const prStates = await mongoose.models.PullRequest.distinct('state', { 
@@ -924,32 +854,27 @@ exports.getRelationalData = async (req, res) => {
       availableStates = [...new Set([...availableStates, ...issueStates])];
     }
     
-    // Initialize results
     let pullRequestsWithCommits = [];
     let issuesWithHistory = [];
     let totalPRs = 0;
     let totalIssues = 0;
     
-    // Build custom filters directly
     const customFilters = {};
     
-    // Add state filter
     if (state_filter && state_filter.toLowerCase() !== 'all') {
       customFilters.state = state_filter;
       console.log('Applied state filter:', state_filter);
     }
     
-    // Add date range filters for closed_at
     if (closed_at_from || closed_at_to) {
       customFilters.closed_at = {};
       
       if (closed_at_from && closed_at_from !== 'null') {
         try {
-          // Parse YYYY-MM-DD format
           const parts = closed_at_from.split('-');
           if (parts.length === 3) {
             const year = parseInt(parts[0]);
-            const month = parseInt(parts[1]) - 1; // Month is 0-indexed in JS Date
+            const month = parseInt(parts[1]) - 1;
             const day = parseInt(parts[2]);
             
             const fromDate = new Date(year, month, day, 0, 0, 0);
@@ -965,11 +890,10 @@ exports.getRelationalData = async (req, res) => {
       
       if (closed_at_to && closed_at_to !== 'null') {
         try {
-          // Parse YYYY-MM-DD format
           const parts = closed_at_to.split('-');
           if (parts.length === 3) {
             const year = parseInt(parts[0]);
-            const month = parseInt(parts[1]) - 1; // Month is 0-indexed in JS Date
+            const month = parseInt(parts[1]) - 1; 
             const day = parseInt(parts[2]);
             
             const toDate = new Date(year, month, day, 23, 59, 59);
@@ -983,7 +907,6 @@ exports.getRelationalData = async (req, res) => {
         }
       }
       
-      // If no valid date filters were added, remove the empty object
       if (Object.keys(customFilters.closed_at).length === 0) {
         delete customFilters.closed_at;
       }
@@ -991,9 +914,7 @@ exports.getRelationalData = async (req, res) => {
     
     console.log('Custom filters:', JSON.stringify(customFilters, null, 2));
     
-    // Fetch Pull Requests with Commits if needed
     if (mongoose.models.PullRequest && (filterType === 'All' || filterType === 'Pull Requests')) {
-      // Build PR match stage
       const prMatchStage = {
         userId: new ObjectId(userId),
         repositoryId: { $in: repoIds },
@@ -1004,10 +925,8 @@ exports.getRelationalData = async (req, res) => {
         prMatchStage.$or = searchConditions;
       }
       
-      // Apply advanced filters
       const advancedFilters = processAdvancedFilters(req.query, mongoose.models.PullRequest);
       if (Object.keys(advancedFilters).length > 0) {
-        // Don't overwrite custom filters that were already applied
         Object.keys(advancedFilters).forEach(key => {
           if (!customFilters[key]) {
             prMatchStage[key] = advancedFilters[key];
@@ -1017,16 +936,13 @@ exports.getRelationalData = async (req, res) => {
       
       console.log('Final PR match stage:', JSON.stringify(prMatchStage, null, 2));
       
-      // Get PR count
       totalPRs = await mongoose.models.PullRequest.countDocuments(prMatchStage);
       
-      // Build aggregation pipeline
       const prPipeline = [
         { $match: prMatchStage },
         sortStage,
         { $skip: skip },
         { $limit: limitNum },
-        // Join with repositories
         {
           $lookup: {
             from: 'repositories',
@@ -1036,7 +952,6 @@ exports.getRelationalData = async (req, res) => {
           }
         },
         { $unwind: '$repository' },
-        // Project only needed fields
         {
           $project: {
             _id: 1,
@@ -1057,7 +972,6 @@ exports.getRelationalData = async (req, res) => {
         }
       ];
       
-      // Add commits lookup if Commit model exists
       if (mongoose.models.Commit) {
         prPipeline.push({
           $lookup: {
@@ -1109,9 +1023,7 @@ exports.getRelationalData = async (req, res) => {
       pullRequestsWithCommits = await mongoose.models.PullRequest.aggregate(prPipeline).exec();
     }
     
-    // Fetch Issues with History if needed
     if (mongoose.models.Issue && (filterType === 'All' || filterType === 'Issues')) {
-      // Build issue match stage
       const issueMatchStage = {
         userId: new ObjectId(userId),
         repositoryId: { $in: repoIds },
@@ -1122,10 +1034,8 @@ exports.getRelationalData = async (req, res) => {
         issueMatchStage.$or = searchConditions;
       }
       
-      // Apply advanced filters
       const advancedFilters = processAdvancedFilters(req.query, mongoose.models.Issue);
       if (Object.keys(advancedFilters).length > 0) {
-        // Don't overwrite custom filters that were already applied
         Object.keys(advancedFilters).forEach(key => {
           if (!customFilters[key]) {
             issueMatchStage[key] = advancedFilters[key];
@@ -1135,16 +1045,13 @@ exports.getRelationalData = async (req, res) => {
       
       console.log('Final Issue match stage:', JSON.stringify(issueMatchStage, null, 2));
       
-      // Get issue count
       totalIssues = await mongoose.models.Issue.countDocuments(issueMatchStage);
       
-      // Build aggregation pipeline
       const issuePipeline = [
         { $match: issueMatchStage },
         sortStage,
         { $skip: skip },
         { $limit: limitNum },
-        // Join with repositories
         {
           $lookup: {
             from: 'repositories',
@@ -1154,7 +1061,6 @@ exports.getRelationalData = async (req, res) => {
           }
         },
         { $unwind: '$repository' },
-        // Project only needed fields
         {
           $project: {
             _id: 1,
@@ -1174,7 +1080,6 @@ exports.getRelationalData = async (req, res) => {
         }
       ];
       
-      // Add history lookup if IssueHistory model exists
       if (mongoose.models.IssueHistory) {
         issuePipeline.push({
           $lookup: {
@@ -1219,7 +1124,6 @@ exports.getRelationalData = async (req, res) => {
       issuesWithHistory = await mongoose.models.Issue.aggregate(issuePipeline).exec();
     }
     
-    // Organize data by repository - use Map for O(1) lookups
     const repoMap = new Map(repositories.map(repo => [repo._id.toString(), {
       repositoryId: repo._id,
       repositoryName: repo.name,
@@ -1228,7 +1132,6 @@ exports.getRelationalData = async (req, res) => {
       issues: []
     }]));
     
-    // Add PRs and issues to their repositories
     pullRequestsWithCommits.forEach(pr => {
       const repoId = pr.repositoryId.toString();
       if (repoMap.has(repoId)) {
@@ -1245,7 +1148,6 @@ exports.getRelationalData = async (req, res) => {
     
     const relationshipData = Array.from(repoMap.values());
     
-    // Extract field schemas
     const pullRequestFields = pullRequestsWithCommits.length > 0 ? 
       extractDistinctFields(pullRequestsWithCommits)
         .filter(x => !x.field.startsWith('_')) : [];
@@ -1264,7 +1166,6 @@ exports.getRelationalData = async (req, res) => {
       extractDistinctFields(issuesWithHistory.flatMap(issue => issue.history || []))
         .filter(x => !x.field.startsWith('_')) : [];
     
-    // Calculate total count based on filter type
     let totalCount = 0;
     if (filterType === 'All') {
       totalCount = totalPRs + totalIssues;
@@ -1366,12 +1267,10 @@ exports.getDistinctFieldValues = async (req, res) => {
       });
     }
     
-    // Determine which model to use based on filterType
     let Model;
     if (filterType === 'Issues') {
       Model = mongoose.models.Issue;
     } else {
-      // Default to PullRequest
       Model = mongoose.models.PullRequest;
     }
     
@@ -1382,7 +1281,6 @@ exports.getDistinctFieldValues = async (req, res) => {
       });
     }
     
-    // Build query
     const query = { userId: new ObjectId(userId) };
     if (repoId && repoId !== 'undefined' && repoId !== 'null') {
       query.repositoryId = new ObjectId(repoId);
@@ -1391,31 +1289,25 @@ exports.getDistinctFieldValues = async (req, res) => {
     console.log(`Getting distinct values for field: ${fieldPath}`);
     console.log('Query:', JSON.stringify(query));
     
-    // For nested fields like user.login, we need to use aggregation
     const isNestedField = fieldPath.includes('.');
     
     let distinctValues = [];
     
     if (isNestedField) {
-      // For nested fields, use aggregation
       const fieldParts = fieldPath.split('.');
       const rootField = fieldParts[0];
       
-      // For user fields, get the full user objects
       if (rootField === 'user' || rootField === 'assignee' || rootField === 'closed_by' || fieldPath.includes('login')) {
         console.log(`Processing user field: ${fieldPath}`);
         
-        // Get sample documents to extract the full user objects
         const sampleDocs = await Model.find(query).limit(100).lean();
         console.log(`Found ${sampleDocs.length} sample documents`);
         
-        // Create a map of login to full user object
         const userMap = new Map();
         
         sampleDocs.forEach(doc => {
           let obj = doc;
           
-          // Get the root object (user, assignee, etc.)
           if (obj && obj[rootField]) {
             obj = obj[rootField];
             
@@ -1433,24 +1325,21 @@ exports.getDistinctFieldValues = async (req, res) => {
         distinctValues = Array.from(userMap.values());
         console.log(`Found ${distinctValues.length} distinct users for field ${fieldPath}`);
       } else {
-        // For other nested fields, use aggregation to get distinct values
         const pipeline = [
           { $match: query },
           { $group: { _id: `$${fieldPath}`, count: { $sum: 1 } } },
           { $sort: { count: -1 } },
-          { $limit: 100 } // Limit to prevent too many options
+          { $limit: 100 } 
         ];
         
         const results = await Model.aggregate(pipeline);
         
-        // Extract the field values
         const fieldValues = results.map(r => r._id).filter(Boolean);
         
         distinctValues = fieldValues.map(value => ({ value }));
         console.log(`Found ${distinctValues.length} distinct values for field ${fieldPath}`);
       }
     } else {
-      // For non-nested fields, use distinct
       const values = await Model.distinct(fieldPath, query);
       distinctValues = values.filter(Boolean).map(value => ({ [fieldPath]: value }));
       console.log(`Found ${distinctValues.length} distinct values for field ${fieldPath}`);
