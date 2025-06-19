@@ -392,11 +392,20 @@ function processAdvancedFilters(queryParams, Model) {
       const operation = key.split('_').pop();
       const values = queryParams[key].split(',');
       
+      
       if (values.length > 0) {
         if (operation === 'in') {
-          advancedFilters[baseField] = { $in: values };
+          if (baseField.includes('.')) {
+            advancedFilters[baseField] = { $in: values };
+          } else {
+            advancedFilters[baseField] = { $in: values };
+          }
         } else if (operation === 'notIn') {
-          advancedFilters[baseField] = { $nin: values };
+          if (baseField.includes('.')) {
+            advancedFilters[baseField] = { $nin: values };
+          } else {
+            advancedFilters[baseField] = { $nin: values };
+          }
         }
       }
       return;
@@ -927,15 +936,25 @@ exports.getRelationalData = async (req, res) => {
       
       const advancedFilters = processAdvancedFilters(req.query, mongoose.models.PullRequest);
       if (Object.keys(advancedFilters).length > 0) {
+        if (advancedFilters['user.login']) {
+          const userLoginFilter = advancedFilters['user.login'];
+          
+          if (userLoginFilter.$in) {
+            prMatchStage['user.login'] = { $in: userLoginFilter.$in };
+          } else if (userLoginFilter.$nin) {
+            prMatchStage['user.login'] = { $nin: userLoginFilter.$nin };
+          }
+          
+          delete advancedFilters['user.login'];
+        }
+        
         Object.keys(advancedFilters).forEach(key => {
           if (!customFilters[key]) {
             prMatchStage[key] = advancedFilters[key];
           }
         });
       }
-      
-      console.log('Final PR match stage:', JSON.stringify(prMatchStage, null, 2));
-      
+
       totalPRs = await mongoose.models.PullRequest.countDocuments(prMatchStage);
       
       const prPipeline = [
@@ -1036,14 +1055,24 @@ exports.getRelationalData = async (req, res) => {
       
       const advancedFilters = processAdvancedFilters(req.query, mongoose.models.Issue);
       if (Object.keys(advancedFilters).length > 0) {
+        if (advancedFilters['user.login']) {
+          const userLoginFilter = advancedFilters['user.login'];
+          
+          if (userLoginFilter.$in) {
+            issueMatchStage['user.login'] = { $in: userLoginFilter.$in };
+          } else if (userLoginFilter.$nin) {
+            issueMatchStage['user.login'] = { $nin: userLoginFilter.$nin };
+          }
+          
+          delete advancedFilters['user.login'];
+        }
+        
         Object.keys(advancedFilters).forEach(key => {
           if (!customFilters[key]) {
             issueMatchStage[key] = advancedFilters[key];
           }
         });
       }
-      
-      console.log('Final Issue match stage:', JSON.stringify(issueMatchStage, null, 2));
       
       totalIssues = await mongoose.models.Issue.countDocuments(issueMatchStage);
       
